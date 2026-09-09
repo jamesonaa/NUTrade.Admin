@@ -1,0 +1,13 @@
+# Visual Studio / .NET Gitignore
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# OS generated files
+.DS_Store
+Thumbs.db

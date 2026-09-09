@@ -1,0 +1,83 @@
+@inject ToastService ToastService
+@implements IDisposable
+
+<div class="nu-toast-container">
+    @foreach (var toast in _toasts)
+    {
+        <div class="nu-toast @GetToastClass(toast.Level)" role="alert" @onclick="() => DismissToast(toast)">
+            <div style="font-size: 1.05rem; line-height: 1; font-weight: 700;">
+                @switch (toast.Level)
+                {
+                    case ToastLevel.Success:
+                        <span style="color: var(--nu-success);">✓</span>
+                        break;
+                    case ToastLevel.Error:
+                        <span style="color: var(--nu-danger);">✕</span>
+                        break;
+                    case ToastLevel.Warning:
+                        <span style="color: var(--nu-warning);">!</span>
+                        break;
+                    default:
+                        <span style="color: var(--nu-info);">i</span>
+                        break;
+                }
+            </div>
+            <div style="flex: 1; min-width: 0;">
+                @if (!string.IsNullOrEmpty(toast.Title))
+                {
+                    <div style="font-family: 'Outfit', sans-serif; font-weight: 700; font-size: 0.86rem; color: var(--nu-navy-primary); margin-bottom: 0.15rem;">
+                        @toast.Title
+                    </div>
+                }
+                <div style="font-size: 0.82rem; color: var(--nu-text-body); line-height: 1.4;">
+                    @toast.Message
+                </div>
+            </div>
+            <button type="button" class="btn-nu-ghost" style="padding: 0; font-size: 1.1rem; line-height: 1;" @onclick="() => DismissToast(toast)" @onclick:stopPropagation="true">
+                &times;
+            </button>
+        </div>
+    }
+</div>
+
+@code {
+    private readonly List<ToastMessage> _toasts = new();
+
+    protected override void OnInitialized()
+    {
+        ToastService.OnShow += HandleToastShow;
+    }
+
+    private void HandleToastShow(ToastMessage message)
+    {
+        _toasts.Add(message);
+        InvokeAsync(StateHasChanged);
+
+        _ = Task.Delay(4500).ContinueWith(_ =>
+        {
+            DismissToast(message);
+        });
+    }
+
+    private void DismissToast(ToastMessage toast)
+    {
+        if (_toasts.Contains(toast))
+        {
+            _toasts.Remove(toast);
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private string GetToastClass(ToastLevel level) => level switch
+    {
+        ToastLevel.Success => "nu-toast-success",
+        ToastLevel.Error => "nu-toast-error",
+        ToastLevel.Warning => "nu-toast-warning",
+        _ => ""
+    };
+
+    public void Dispose()
+    {
+        ToastService.OnShow -= HandleToastShow;
+    }
+}

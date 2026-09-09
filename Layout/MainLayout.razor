@@ -1,0 +1,85 @@
+@inherits LayoutComponentBase
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@implements IDisposable
+
+<ToastContainer />
+
+@if (IsLoginPage)
+{
+    <div class="nu-login-shell">
+        @Body
+    </div>
+}
+else
+{
+    <div class="nu-app-shell">
+        @if (_sidebarOpen)
+        {
+            <div class="nu-sidebar-overlay visible" @onclick="CloseSidebar"></div>
+        }
+
+        <aside class="nu-sidebar @(_sidebarOpen ? "mobile-open" : null)">
+            <NavMenu />
+        </aside>
+
+        <main class="nu-main-content">
+            <header class="nu-topbar">
+                <div style="display: flex; align-items: center; gap: 0.75rem; min-width: 0;">
+                    <button type="button" class="nu-menu-toggle" @onclick="ToggleSidebar" aria-label="Toggle navigation">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="4" y1="6" x2="20" y2="6"/>
+                            <line x1="4" y1="12" x2="20" y2="12"/>
+                            <line x1="4" y1="18" x2="20" y2="18"/>
+                        </svg>
+                    </button>
+                    <div class="nu-topbar-titles">
+                        <div class="nu-topbar-eyebrow">Admin Portal</div>
+                        <div class="nu-topbar-title">Marketplace Operations & Security</div>
+                    </div>
+                </div>
+
+                <div class="nu-topbar-meta">
+                    <div class="badge-pill badge-pill-navy">
+                        <span class="pulse-dot" style="background-color: var(--nu-success);"></span>
+                        <span>Firestore Live</span>
+                    </div>
+                    <div class="badge-pill badge-pill-gold">
+                        <span>Marketplace Live</span>
+                    </div>
+                </div>
+            </header>
+
+            <div class="nu-page-body">
+                @Body
+            </div>
+        </main>
+    </div>
+}
+
+@code {
+    private bool _sidebarOpen;
+
+    private bool IsLoginPage => NavigationManager.Uri.EndsWith("/login", StringComparison.OrdinalIgnoreCase) ||
+                               NavigationManager.Uri.EndsWith("/", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized()
+    {
+        NavigationManager.LocationChanged += HandleLocationChanged;
+    }
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        _sidebarOpen = false;
+        StateHasChanged();
+    }
+
+    private void ToggleSidebar() => _sidebarOpen = !_sidebarOpen;
+
+    private void CloseSidebar() => _sidebarOpen = false;
+
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= HandleLocationChanged;
+    }
+}

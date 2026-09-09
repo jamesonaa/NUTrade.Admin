@@ -1,0 +1,177 @@
+@page "/login"
+@page "/"
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@inject ToastService ToastService
+
+<PageTitle>Admin Sign-In | NUTrade Portal</PageTitle>
+
+<div class="login-card nu-card">
+    <div class="login-brand">
+        <h1 style="font-size: 1.65rem; font-weight: 800; margin: 0 0 0.3rem;">
+            <span style="color: var(--nu-gold-primary);">NU</span><span style="color: var(--nu-navy-primary);">Trade</span>
+            <span class="nu-brand-badge" style="font-size: 0.75rem; vertical-align: middle; margin-left: 0.3rem;">ADMIN</span>
+        </h1>
+        <p>Marketplace Administration Portal</p>
+    </div>
+
+    <div class="login-notice">
+        <div class="login-notice-title">Restricted Access (RBAC)</div>
+        <div class="login-notice-body">Admin privileges and verified institutional credentials required.</div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_authErrorMessage))
+    {
+        <div class="login-error">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>@_authErrorMessage</span>
+        </div>
+    }
+
+    <EditForm Model="@_loginModel" OnValidSubmit="HandleLogin">
+        <DataAnnotationsValidator />
+
+        <div class="nu-input-group">
+            <label class="nu-label" for="admin-email">NU Institutional Email</label>
+            <InputText id="admin-email"
+                       class="nu-input"
+                       placeholder="e.g. admin@lipa.nu.edu.ph"
+                       @bind-Value="_loginModel.Email"
+                       disabled="@_isProcessing" />
+            <ValidationMessage For="@(() => _loginModel.Email)" class="validation-message" style="font-size: 0.78rem; margin-top: 0.35rem; display: block;" />
+        </div>
+
+        <div class="nu-input-group">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+                <label class="nu-label" for="admin-password" style="margin-bottom: 0;">Password</label>
+                <span style="font-size: 0.72rem; color: var(--nu-text-muted);">Firebase Auth</span>
+            </div>
+            <InputText id="admin-password"
+                       type="password"
+                       class="nu-input"
+                       placeholder="Enter your administrative password"
+                       @bind-Value="_loginModel.Password"
+                       disabled="@_isProcessing" />
+            <ValidationMessage For="@(() => _loginModel.Password)" class="validation-message" style="font-size: 0.78rem; margin-top: 0.35rem; display: block;" />
+        </div>
+
+        <div class="login-row">
+            <label class="login-remember">
+                <input type="checkbox" @bind="_loginModel.RememberMe" style="accent-color: var(--nu-navy-primary);" />
+                <span>Remember admin session</span>
+            </label>
+            <span class="badge-pill badge-pill-gold">TLS Secured</span>
+        </div>
+
+        <button type="submit"
+                class="btn-nu-gold"
+                style="width: 100%; padding: 0.75rem; font-size: 0.95rem;"
+                disabled="@_isProcessing">
+            @if (_isProcessing)
+            {
+                <span class="pulse-dot" style="background-color: var(--nu-navy-dark);"></span>
+                <span>Verifying Credentials...</span>
+            }
+            else
+            {
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                    <polyline points="10 17 15 12 10 7"/>
+                    <line x1="15" y1="12" x2="3" y2="12"/>
+                </svg>
+                <span>Sign In to Admin Console</span>
+            }
+        </button>
+    </EditForm>
+
+    <div class="login-demo">
+        <div class="login-demo-label">Evaluation Credentials Quick Select</div>
+        <div class="login-demo-grid">
+            <button type="button"
+                    class="btn-nu-outline"
+                    @onclick="PreFillAdmin">
+                <span style="font-weight: 700; color: var(--nu-navy-primary);">Verified Admin</span>
+                <span style="font-size: 0.65rem; color: var(--nu-success);">Passes RBAC</span>
+            </button>
+
+            <button type="button"
+                    class="btn-nu-outline"
+                    @onclick="PreFillUnauthorized">
+                <span style="font-weight: 700; color: var(--nu-danger);">Student Account</span>
+                <span style="font-size: 0.65rem; color: var(--nu-danger);">Triggers 403</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    private readonly LoginRequest _loginModel = new()
+    {
+        Email = "admin@lipa.nu.edu.ph",
+        Password = "AdminSecurePassword2026!"
+    };
+
+    private bool _isProcessing = false;
+    private string? _authErrorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthService.InitializeAsync();
+
+        // If already authenticated with verified admin status, redirect to dashboard
+        if (AuthService.IsAuthenticated)
+        {
+            NavigationManager.NavigateTo("admin/dashboard");
+        }
+    }
+
+    private void PreFillAdmin()
+    {
+        _loginModel.Email = "admin@lipa.nu.edu.ph";
+        _loginModel.Password = "AdminSecurePassword2026!";
+        _authErrorMessage = null;
+    }
+
+    private void PreFillUnauthorized()
+    {
+        _loginModel.Email = "student.unauthorized@lipa.nu.edu.ph";
+        _loginModel.Password = "StudentPass123!";
+        _authErrorMessage = null;
+    }
+
+    private async Task HandleLogin()
+    {
+        _isProcessing = true;
+        _authErrorMessage = null;
+
+        try
+        {
+            // Execute Firebase Authentication and Firestore users/{uid} RBAC check
+            var result = await AuthService.SignInAsync(_loginModel.Email, _loginModel.Password);
+
+            if (result.Success && result.User != null && result.User.IsAdmin && result.User.IsVerified)
+            {
+                // Route to /admin/dashboard on successful RBAC verification
+                NavigationManager.NavigateTo("admin/dashboard");
+            }
+            else
+            {
+                // RBAC failure: terminate session and render error message
+                _authErrorMessage = result.ErrorMessage ?? "Unauthorized access: Admin privileges required.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _authErrorMessage = $"Authentication error: {ex.Message}";
+            ToastService.ShowError(_authErrorMessage, "System Error");
+        }
+        finally
+        {
+            _isProcessing = false;
+        }
+    }
+}

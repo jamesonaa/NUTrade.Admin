@@ -1,0 +1,288 @@
+@page "/admin/verifications"
+@inject IFirestoreService FirestoreService
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@inject ToastService ToastService
+@implements IDisposable
+
+<PageTitle>Email Verification Queue | NUTrade Admin</PageTitle>
+
+<div style="display: flex; flex-direction: column; gap: 1.25rem;">
+
+    <div class="vu-page-header">
+        <div class="vu-title-block">
+            <div class="vu-title-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--nu-gold-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="20" height="16" x="2" y="4" rx="2"/>
+                    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                </svg>
+            </div>
+            <div>
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                    <span class="badge-pill badge-pill-gold">Module A</span>
+                </div>
+                <h1 style="font-size: 1.35rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0 0 0.25rem;">
+                    Email Verification Queue
+                </h1>
+                <p style="font-size: 0.85rem; color: var(--nu-text-muted); margin: 0; max-width: 520px; line-height: 1.45;">
+                    Review pending personal emails (not NU institutional). Approvals unlock posting, bidding, and chatting on the mobile app.
+                </p>
+            </div>
+        </div>
+
+        <div class="vu-stats">
+            <div class="vu-stat-chip">
+                <span class="pulse-dot" style="background-color: var(--nu-warning);"></span>
+                <span><strong>@FirestoreService.PendingVerifications.Count</strong> pending</span>
+            </div>
+            <div class="vu-stat-chip">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>
+                </svg>
+                <span>Latest → oldest</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="nu-card">
+        @{
+            var rows = FilteredVerifications.ToList();
+        }
+        <div class="vu-toolbar">
+            <div class="vu-search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input type="text"
+                       class="nu-input"
+                       placeholder="Search by name or email..."
+                       @bind="_searchFilter"
+                       @bind:event="oninput" />
+            </div>
+            <div class="vu-sort-hint">
+                @if (!string.IsNullOrWhiteSpace(_searchFilter))
+                {
+                    <span>@rows.Count result@(rows.Count == 1 ? "" : "s")</span>
+                    <span style="opacity: 0.4;">·</span>
+                }
+                <span>Sorted by registration time</span>
+            </div>
+        </div>
+
+        @if (rows.Count > 0)
+        {
+            <div class="vu-list">
+                @foreach (var student in rows)
+                {
+                    var submitted = student.SubmittedAt ?? student.CreatedAt;
+                    <div class="vu-row">
+                        <div class="vu-student">
+                            <div class="vu-avatar">
+                                @(student.DisplayName.Length > 0 ? student.DisplayName[0].ToString().ToUpper() : "?")
+                            </div>
+                            <div style="min-width: 0;">
+                                <div class="vu-name">@student.DisplayName</div>
+                                <div class="vu-uid">@TruncateUid(student.Uid)</div>
+                            </div>
+                        </div>
+
+                        <div class="vu-email" title="@student.Email">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect width="20" height="16" x="2" y="4" rx="2"/>
+                                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                            </svg>
+                            <span style="overflow: hidden; text-overflow: ellipsis;">@student.Email</span>
+                        </div>
+
+                        <div class="vu-time">
+                            <div class="vu-time-rel">@FormatRelative(submitted)</div>
+                            <div class="vu-time-abs">@submitted.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt")</div>
+                        </div>
+
+                        <div class="vu-actions">
+                            <button type="button"
+                                    class="btn-nu-success"
+                                    @onclick="() => DirectApprove(student)"
+                                    disabled="@(_processingUid == student.Uid)">
+                                @if (_processingUid == student.Uid)
+                                {
+                                    <span>…</span>
+                                }
+                                else
+                                {
+                                    <span>Approve</span>
+                                }
+                            </button>
+                            <button type="button"
+                                    class="btn-nu-danger"
+                                    @onclick="() => OpenRejectModal(student)"
+                                    disabled="@(_processingUid == student.Uid)">
+                                Reject
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="vu-empty">
+                <div class="vu-empty-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                </div>
+                @if (string.IsNullOrWhiteSpace(_searchFilter))
+                {
+                    <h3>Queue is clear</h3>
+                    <p>All pending personal emails have been reviewed.</p>
+                }
+                else
+                {
+                    <h3>No matches</h3>
+                    <p>Nothing found for “@_searchFilter”.</p>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@if (_studentToReject != null)
+{
+    <div class="nu-modal-backdrop" @onclick="CloseRejectModal">
+        <div class="nu-modal-card" style="max-width: 460px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header" style="background: var(--nu-danger-bg);">
+                <div class="vu-modal-student">
+                    <div class="vu-modal-avatar">
+                        @(_studentToReject.DisplayName.Length > 0 ? _studentToReject.DisplayName[0].ToString().ToUpper() : "?")
+                    </div>
+                    <div>
+                        <div style="font-size: 0.7rem; font-weight: 700; color: var(--nu-danger); text-transform: uppercase; letter-spacing: 0.04em;">
+                            Reject email verification
+                        </div>
+                        <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0.1rem 0 0;">
+                            @_studentToReject.DisplayName
+                        </h3>
+                        <div style="font-size: 0.8rem; color: var(--nu-text-muted);">@_studentToReject.Email</div>
+                    </div>
+                </div>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="CloseRejectModal">✕</button>
+            </div>
+
+            <div class="nu-modal-body">
+                <label class="nu-label">Rejection reason <span style="font-weight: 500; color: var(--nu-text-muted);">(optional)</span></label>
+                <input type="text"
+                       class="nu-input"
+                       placeholder="e.g. Invalid personal email, duplicate account..."
+                       @bind="_rejectionReason" />
+                <p style="font-size: 0.75rem; color: var(--nu-text-muted); margin: 0.6rem 0 0; line-height: 1.4;">
+                    If provided, this reason can be shown to the student.
+                </p>
+            </div>
+
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="CloseRejectModal">Cancel</button>
+                <button type="button"
+                        class="btn-nu-danger"
+                        style="background: var(--nu-danger); color: white; border-color: var(--nu-danger);"
+                        @onclick="ConfirmReject"
+                        disabled="@_isSubmitting">
+                    @(_isSubmitting ? "Rejecting..." : "Confirm rejection")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string _searchFilter = string.Empty;
+    private string? _processingUid;
+    private bool _isSubmitting = false;
+    private UserProfile? _studentToReject;
+    private string _rejectionReason = string.Empty;
+
+    private IEnumerable<UserProfile> FilteredVerifications
+    {
+        get
+        {
+            var query = FirestoreService.PendingVerifications.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(_searchFilter))
+            {
+                query = query.Where(u =>
+                    u.DisplayName.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                    u.Email.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return query.OrderByDescending(u => u.SubmittedAt ?? u.CreatedAt);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!AuthService.IsAuthenticated)
+        {
+            NavigationManager.NavigateTo("login");
+            return;
+        }
+
+        FirestoreService.OnVerificationsUpdated += HandleUpdate;
+        await FirestoreService.InitializeSubscriptionsAsync();
+    }
+
+    private void HandleUpdate() => InvokeAsync(StateHasChanged);
+
+    private async Task DirectApprove(UserProfile student)
+    {
+        _processingUid = student.Uid;
+        await FirestoreService.ApproveVerificationAsync(student.Uid);
+        _processingUid = null;
+    }
+
+    private void OpenRejectModal(UserProfile student)
+    {
+        _studentToReject = student;
+        _rejectionReason = string.Empty;
+    }
+
+    private void CloseRejectModal()
+    {
+        _studentToReject = null;
+        _rejectionReason = string.Empty;
+    }
+
+    private async Task ConfirmReject()
+    {
+        if (_studentToReject == null) return;
+        _isSubmitting = true;
+        bool ok = await FirestoreService.RejectVerificationAsync(_studentToReject.Uid, _rejectionReason);
+        if (ok) CloseRejectModal();
+        _isSubmitting = false;
+    }
+
+    private static string TruncateUid(string uid)
+    {
+        if (string.IsNullOrEmpty(uid)) return "—";
+        return uid.Length <= 16 ? uid : $"{uid[..16]}…";
+    }
+
+    private static string FormatRelative(DateTime dt)
+    {
+        var local = dt.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(dt, DateTimeKind.Utc).ToLocalTime()
+            : dt.ToLocalTime();
+        var span = DateTime.Now - local;
+
+        if (span.TotalSeconds < 45) return "Just now";
+        if (span.TotalMinutes < 60) return $"{Math.Max(1, (int)span.TotalMinutes)}m ago";
+        if (span.TotalHours < 24) return $"{(int)span.TotalHours}h ago";
+        if (span.TotalDays < 7) return $"{(int)span.TotalDays}d ago";
+        return local.ToString("MMM dd");
+    }
+
+    public void Dispose()
+    {
+        FirestoreService.OnVerificationsUpdated -= HandleUpdate;
+    }
+}
