@@ -61,6 +61,7 @@ else
     private bool _sidebarOpen;
 
     private bool IsLoginPage => NavigationManager.Uri.EndsWith("/login", StringComparison.OrdinalIgnoreCase) ||
+                               NavigationManager.Uri.EndsWith("/security-verification", StringComparison.OrdinalIgnoreCase) ||
                                NavigationManager.Uri.EndsWith("/", StringComparison.OrdinalIgnoreCase);
 
     protected override void OnInitialized()

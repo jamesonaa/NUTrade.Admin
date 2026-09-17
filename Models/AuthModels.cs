@@ -21,4 +21,15 @@ public class AuthResult
     public string? ErrorMessage { get; set; }
     public UserProfile? User { get; set; }
     public string? Token { get; set; }
+    public bool IsEmailUnverified { get; set; }
+    public string? UnverifiedEmail { get; set; }
+    public bool RequiresSecurityVerification { get; set; }
+}
+
+public class SecurityVerificationResult
+{
+    public bool Success { get; set; }
+    public bool IsExpired { get; set; }
+    public string? ErrorMessage { get; set; }
+    public DateTime? ExpiresAt { get; set; }
 }

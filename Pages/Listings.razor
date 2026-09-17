@@ -224,6 +224,12 @@
             return;
         }
 
+        if (!AuthService.IsSecurityVerified)
+        {
+            NavigationManager.NavigateTo("security-verification");
+            return;
+        }
+
         FirestoreService.OnListingsUpdated += HandleUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }

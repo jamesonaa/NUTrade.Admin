@@ -363,11 +363,18 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // Enforce RBAC in page lifecycle
+        // Enforce RBAC & 2FA Security Verification in page lifecycle
         if (!AuthService.IsAuthenticated)
         {
             ToastService.ShowError("Unauthorized access: Admin privileges required.", "Access Denied");
             NavigationManager.NavigateTo("login");
+            return;
+        }
+
+        if (!AuthService.IsSecurityVerified)
+        {
+            ToastService.ShowError("Admin Security Verification required.", "Access Denied");
+            NavigationManager.NavigateTo("security-verification");
             return;
         }
 

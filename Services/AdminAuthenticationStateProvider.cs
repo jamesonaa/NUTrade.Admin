@@ -17,7 +17,7 @@ public class AdminAuthenticationStateProvider : AuthenticationStateProvider, IDi
     public override Task<AuthenticationState> GetAuthenticationStateAsync()
     {
         var user = _authService.CurrentUser;
-        if (user == null || !user.IsAdmin || !user.IsVerified)
+        if (user == null || !user.IsAdmin || !user.IsVerified || !user.EmailVerified || !_authService.IsSecurityVerified)
         {
             var anonymous = new ClaimsPrincipal(new ClaimsIdentity());
             return Task.FromResult(new AuthenticationState(anonymous));

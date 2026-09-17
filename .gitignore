@@ -11,3 +11,9 @@ obj/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Firebase Cloud Functions
+functions/node_modules/
+firebase-debug.log
+firebase-debug.*.log
+.firebase/

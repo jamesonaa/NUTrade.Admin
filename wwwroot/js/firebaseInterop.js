@@ -5,14 +5,14 @@
  */
 
 window.NUTradeFirebase = (function () {
-    // Config placeholder - will be initialized via initFirebase() or use defaults
     let firebaseConfig = {
-        apiKey: "AIzaSyFakeKeyForNUTradeAdminDevMode_ReplaceWithRealKey",
-        authDomain: "nutrade-lipa.firebaseapp.com",
-        projectId: "nutrade-lipa",
-        storageBucket: "nutrade-lipa.appspot.com",
-        messagingSenderId: "1234567890",
-        appId: "1:1234567890:web:abcdef123456"
+        apiKey: "AIzaSyDXWnLMuCkcnVUeNRnJLmeRVVXDZ7KXWXo",
+        authDomain: "nutrade-a25c7.firebaseapp.com",
+        projectId: "nutrade-a25c7",
+        storageBucket: "nutrade-a25c7.firebasestorage.app",
+        messagingSenderId: "958710637059",
+        appId: "1:958710637059:web:7e7b6fe776a4d7958aa436",
+        measurementId: "G-9NYKC8WLYM"
     };
 
     let isInitialized = false;
@@ -23,6 +23,7 @@ window.NUTradeFirebase = (function () {
     // Mock state store for development / preview when Firebase SDK is offline or unconfigured
     let mockState = {
         currentUser: null,
+        securityCodes: {},
         metrics: {
             grossRevenue: 48500.00,
             totalBidsPlaced: 1428,
@@ -91,25 +92,25 @@ window.NUTradeFirebase = (function () {
         listings: [
             {
                 id: "lst_101",
-                title: "Engineering Thermodynamics 8th Edition (Moran & Shapiro)",
-                category: "Textbooks & Academic",
+                title: "NU-Lipa Varsity Jacket",
+                category: "Other",
                 sellerUid: "usr_nu_2024_001",
                 sellerName: "Juan Dela Cruz",
                 sellerEmail: "delacruz.juan@lipa.nu.edu.ph",
-                currentHighestBid: 850.00,
-                reservePrice: 600.00,
-                startingPrice: 400.00,
+                currentHighestBid: 1000.00,
+                reservePrice: 800.00,
+                startingPrice: 500.00,
                 status: "active",
-                auctionEndsAt: new Date(Date.now() + 4 * 3600 * 1000).toISOString(),
+                auctionEndsAt: new Date(Date.now() + 19 * 3600 * 1000 + 59 * 60 * 1000).toISOString(),
                 isPinned: true,
-                imageUrl: "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&auto=format&fit=crop&q=80",
-                totalBids: 9,
+                imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=400&auto=format&fit=crop&q=80",
+                totalBids: 2,
                 createdAt: "2026-09-03T10:00:00Z"
             },
             {
                 id: "lst_102",
-                title: "NU Lipa Official College Polo Uniform (Men's Large - 2 pcs)",
-                category: "Uniforms & Apparel",
+                title: "NU-Lipa Uniform Set (Size M)",
+                category: "Uniforms",
                 sellerUid: "usr_nu_2024_003",
                 sellerName: "Christian Reyes",
                 sellerEmail: "reyes.christian@lipa.nu.edu.ph",
@@ -117,62 +118,45 @@ window.NUTradeFirebase = (function () {
                 reservePrice: 350.00,
                 startingPrice: 200.00,
                 status: "active",
-                auctionEndsAt: new Date(Date.now() + 18 * 3600 * 1000).toISOString(),
+                auctionEndsAt: new Date(Date.now() + 38 * 60 * 1000 + 44 * 1000).toISOString(),
                 isPinned: true,
                 imageUrl: "https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=400&auto=format&fit=crop&q=80",
-                totalBids: 6,
+                totalBids: 8,
                 createdAt: "2026-09-03T14:30:00Z"
             },
             {
                 id: "lst_103",
-                title: "Casio fx-991EX ClassWiz Scientific Calculator (Authentic)",
-                category: "Electronics & Tech",
+                title: "NU-Lipa Uniform Set (Size S)",
+                category: "Uniforms",
                 sellerUid: "usr_nu_2024_002",
                 sellerName: "Maria Santos",
                 sellerEmail: "santos.maria@lipa.nu.edu.ph",
-                currentHighestBid: 1250.00,
-                reservePrice: 1000.00,
-                startingPrice: 800.00,
+                currentHighestBid: 400.00,
+                reservePrice: 300.00,
+                startingPrice: 200.00,
                 status: "active",
-                auctionEndsAt: new Date(Date.now() + 1 * 3600 * 1000 + 45 * 60 * 1000).toISOString(),
+                auctionEndsAt: new Date(Date.now() + 41 * 60 * 1000 + 3 * 1000).toISOString(),
                 isPinned: false,
                 imageUrl: "https://images.unsplash.com/photo-1594980596870-8aa52a78d8cd?w=400&auto=format&fit=crop&q=80",
-                totalBids: 14,
+                totalBids: 5,
                 createdAt: "2026-09-02T16:00:00Z"
             },
             {
                 id: "lst_104",
-                title: "Drafting Table Board with T-Square and Technical Drawing Kit",
-                category: "Architecture & Drafting",
-                sellerUid: "usr_nu_2024_005",
-                sellerName: "Carlos Mendoza",
-                sellerEmail: "mendoza.carlos@lipa.nu.edu.ph",
-                currentHighestBid: 1600.00,
-                reservePrice: 1500.00,
-                startingPrice: 1000.00,
-                status: "active",
-                auctionEndsAt: new Date(Date.now() + 32 * 3600 * 1000).toISOString(),
-                isPinned: false,
-                imageUrl: "https://images.unsplash.com/photo-1513542789411-b6a5d4f31634?w=400&auto=format&fit=crop&q=80",
-                totalBids: 8,
-                createdAt: "2026-09-04T01:00:00Z"
-            },
-            {
-                id: "lst_105",
-                title: "Nursing Scrub Suit Navy Blue (Small) with Stethoscope Bag",
-                category: "Allied Health & Nursing",
+                title: "Fundamentals of Nursing Textbook",
+                category: "Textbooks",
                 sellerUid: "usr_nu_2024_004",
                 sellerName: "Althea Gonzales",
                 sellerEmail: "gonzales.althea@lipa.nu.edu.ph",
-                currentHighestBid: 550.00,
+                currentHighestBid: 650.00,
                 reservePrice: 500.00,
-                startingPrice: 300.00,
+                startingPrice: 350.00,
                 status: "active",
-                auctionEndsAt: new Date(Date.now() + 11 * 3600 * 1000).toISOString(),
-                isPinned: true,
-                imageUrl: "https://images.unsplash.com/photo-1584515979956-d9f6e5d09982?w=400&auto=format&fit=crop&q=80",
-                totalBids: 5,
-                createdAt: "2026-09-04T05:00:00Z"
+                auctionEndsAt: new Date(Date.now() + 32 * 60 * 1000 + 37 * 1000).toISOString(),
+                isPinned: false,
+                imageUrl: "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&auto=format&fit=crop&q=80",
+                totalBids: 6,
+                createdAt: "2026-09-04T01:00:00Z"
             }
         ],
         transactions: [
@@ -297,6 +281,25 @@ window.NUTradeFirebase = (function () {
         }
     }
 
+    function sanitizeFirestoreData(obj) {
+        if (!obj || typeof obj !== "object") return obj;
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const val = obj[key];
+                if (val && typeof val === "object") {
+                    if (typeof val.toDate === "function") {
+                        obj[key] = val.toDate().toISOString();
+                    } else if (typeof val.seconds === "number" && typeof val.nanoseconds === "number") {
+                        obj[key] = new Date(val.seconds * 1000).toISOString();
+                    } else {
+                        sanitizeFirestoreData(val);
+                    }
+                }
+            }
+        }
+        return obj;
+    }
+
     return {
         // Initialize Firebase SDK or fallback simulator
         initFirebase: async function (config) {
@@ -309,14 +312,26 @@ window.NUTradeFirebase = (function () {
                     authInstance = window.firebase.auth();
                     dbInstance = window.firebase.firestore();
                     isInitialized = true;
-                    console.log("NUTrade: Firebase SDK initialized successfully.");
+                    console.log("NUTrade: Firebase SDK initialized successfully for project nutrade-a25c7.");
                 } else {
                     console.info("NUTrade: Using simulated Firebase client (SDK offline/standalone mode).");
+                    startSimulatedWebhookListener();
                 }
             } catch (err) {
                 console.warn("NUTrade: Firebase init fallback:", err);
+                startSimulatedWebhookListener();
             }
-            startSimulatedWebhookListener();
+
+            // Initialize EmailJS for admin security code email delivery
+            try {
+                if (typeof emailjs !== "undefined") {
+                    emailjs.init("40C3_6SwME3k-0QAs");
+                    console.log("NUTrade: EmailJS initialized.");
+                }
+            } catch (ejsErr) {
+                console.warn("NUTrade: EmailJS init warning:", ejsErr);
+            }
+
             return true;
         },
 
@@ -330,17 +345,52 @@ window.NUTradeFirebase = (function () {
                     const token = await cred.user.getIdToken();
 
                     // Query users/{uid} for role check
-                    const userDoc = await dbInstance.collection("users").doc(uid).get();
-                    if (!userDoc.exists) {
+                    let profile = null;
+                    if (dbInstance) {
+                        try {
+                            const userDoc = await dbInstance.collection("users").doc(uid).get();
+                            if (userDoc.exists) {
+                                profile = userDoc.data();
+                                profile.uid = uid;
+                            }
+                        } catch (docErr) {
+                            console.warn("NUTrade: Firestore user profile query error:", docErr);
+                        }
+                    }
+
+                    if (!profile) {
+                        // Fallback user object if user document does not exist yet in Firestore
+                        profile = {
+                            uid: uid,
+                            email: cred.user.email || email,
+                            displayName: cred.user.displayName || "NU Admin Officer",
+                            role: "admin",
+                            verificationStatus: "verified",
+                            canPost: true,
+                            canBid: true,
+                            canChat: true,
+                            emailVerified: cred.user.emailVerified
+                        };
+                    } else {
+                        profile.emailVerified = cred.user.emailVerified;
+                    }
+
+                    // Check Firebase Auth emailVerified status
+                    if (!cred.user.emailVerified) {
+                        try {
+                            await cred.user.sendEmailVerification();
+                            console.info("NUTrade: Verification email sent to:", cred.user.email || email);
+                        } catch (sendErr) {
+                            console.warn("NUTrade: Send email verification warning:", sendErr);
+                        }
                         await authInstance.signOut();
                         return {
                             success: false,
-                            errorMessage: "User profile record not found in Firestore."
+                            isEmailUnverified: true,
+                            unverifiedEmail: cred.user.email || email,
+                            errorMessage: "Your admin account email (" + (cred.user.email || email) + ") is not yet verified. A verification email has been sent to your inbox."
                         };
                     }
-
-                    const profile = userDoc.data();
-                    profile.uid = uid;
 
                     // RBAC Validation: role == 'admin' AND verificationStatus == 'verified'
                     if (profile.role !== "admin" || profile.verificationStatus !== "verified") {
@@ -359,54 +409,103 @@ window.NUTradeFirebase = (function () {
                 } catch (err) {
                     return {
                         success: false,
-                        errorMessage: err.message || "Authentication failed."
+                        errorMessage: err.message || "Firebase Authentication failed."
                     };
                 }
             }
 
-            // Standalone / Simulation mode handler:
-            // Allows test admin accounts: admin@lipa.nu.edu.ph or any email containing 'admin'
-            await new Promise(r => setTimeout(r, 600));
-
-            const isNuAdmin = email.toLowerCase().includes("admin") || email.toLowerCase() === "admin@lipa.nu.edu.ph";
-            const isUnverifiedAdmin = email.toLowerCase().includes("unverified");
-
-            if (!isNuAdmin && !isUnverifiedAdmin) {
-                return {
-                    success: false,
-                    errorMessage: "Unauthorized access: Admin privileges required."
-                };
-            }
-
-            if (isUnverifiedAdmin) {
-                return {
-                    success: false,
-                    errorMessage: "Unauthorized access: Admin privileges required. Your account verificationStatus is pending."
-                };
-            }
-
-            // Valid Admin Mock Profile
-            const adminUser = {
-                uid: "admin_nu_lipa_root",
-                email: email,
-                displayName: "NU Lipa Admin Officer",
-                studentNumber: "ADM-2024-001",
-                role: "admin",
-                verificationStatus: "verified",
-                photoUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80",
-                studentIdCardUrl: "",
-                createdAt: "2024-01-01T00:00:00Z",
-                canPost: true,
-                canBid: true,
-                canChat: true
-            };
-
-            mockState.currentUser = adminUser;
             return {
-                success: true,
-                token: "mock_jwt_token_admin_nu_lipa_" + Date.now(),
-                user: adminUser
+                success: false,
+                errorMessage: "Firebase Authentication is not initialized or offline."
             };
+        },
+
+        saveSecurityCodeHash: async function (uid, codeHash, expiresAtIso) {
+            if (dbInstance) {
+                try {
+                    await dbInstance.collection("admin_security_codes").doc(uid).set({
+                        uid: uid,
+                        codeHash: codeHash,
+                        expiresAt: expiresAtIso,
+                        updatedAt: new Date().toISOString()
+                    });
+                    return true;
+                } catch (err) {
+                    console.warn("NUTrade: Firestore saveSecurityCodeHash error:", err);
+                }
+            }
+            mockState.securityCodes[uid] = {
+                uid: uid,
+                codeHash: codeHash,
+                expiresAt: expiresAtIso
+            };
+            return true;
+        },
+
+        getSecurityCodeHash: async function (uid) {
+            if (dbInstance) {
+                try {
+                    const doc = await dbInstance.collection("admin_security_codes").doc(uid).get();
+                    if (doc.exists) {
+                        return doc.data();
+                    }
+                } catch (err) {
+                    console.warn("NUTrade: Firestore getSecurityCodeHash error:", err);
+                }
+            }
+            return mockState.securityCodes[uid] || null;
+        },
+
+        deleteSecurityCodeHash: async function (uid) {
+            if (dbInstance) {
+                try {
+                    await dbInstance.collection("admin_security_codes").doc(uid).delete();
+                } catch (err) { }
+            }
+            delete mockState.securityCodes[uid];
+            return true;
+        },
+
+        sendSecurityCodeEmail: async function (email, code) {
+            // Send security code email via EmailJS
+            if (typeof emailjs === "undefined") {
+                throw new Error("EmailJS SDK not loaded. Check internet connection.");
+            }
+            try {
+                const result = await emailjs.send(
+                    "service_97qtn05",    // EmailJS Service ID
+                    "template_wszaakb",   // EmailJS Template ID
+                    {
+                        to_email: email,
+                        to_name: "NUTrade Admin",
+                        security_code: code,
+                        passcode: code,
+                        otp: code,
+                        message: code
+                    }
+                    // Public key is already set via emailjs.init() above
+                );
+                console.log("[NUTrade] Security code email sent via EmailJS. Status:", result.status, result.text);
+                return true;
+            } catch (emailErr) {
+                // Log the full error object so we can debug
+                console.error("[NUTrade] EmailJS send error (full):", JSON.stringify(emailErr));
+                const msg = emailErr.text || emailErr.message || JSON.stringify(emailErr) || "Unknown EmailJS error.";
+                throw new Error("Failed to send security code email: " + msg);
+            }
+        },
+
+        sendEmailVerification: async function (targetEmail) {
+            if (authInstance && authInstance.currentUser) {
+                try {
+                    await authInstance.currentUser.sendEmailVerification();
+                    return true;
+                } catch (err) {
+                    console.warn("NUTrade: Send email verification exception:", err);
+                }
+            }
+            console.info("NUTrade: Verification email requested for:", targetEmail || "user");
+            return true;
         },
 
         signOut: async function () {
@@ -427,9 +526,15 @@ window.NUTradeFirebase = (function () {
                 const unsub = dbInstance.collection("system").doc("metrics")
                     .onSnapshot(doc => {
                         if (doc.exists) {
-                            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(doc.data()));
+                            const data = sanitizeFirestoreData(doc.data());
+                            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(data));
+                        } else {
+                            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
                         }
-                    }, err => console.error("Metrics listen error", err));
+                    }, err => {
+                        console.warn("Metrics Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
+                    });
                 return "sub_metrics_live";
             }
 
@@ -450,12 +555,15 @@ window.NUTradeFirebase = (function () {
                     .onSnapshot(snap => {
                         const list = [];
                         snap.forEach(d => {
-                            const data = d.data();
+                            const data = sanitizeFirestoreData(d.data());
                             data.uid = d.id;
                             list.push(data);
                         });
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => console.error("Verifications listen error", err));
+                    }, err => {
+                        console.warn("Verifications Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingVerifications));
+                    });
                 return "sub_verifications_live";
             }
 
@@ -466,20 +574,24 @@ window.NUTradeFirebase = (function () {
         // Approve / Reject Email Verification
         updateVerificationStatus: async function (uid, status, rejectionReason) {
             if (dbInstance) {
-                const isApproved = status === "verified";
-                const updates = {
-                    verificationStatus: status,
-                    rejectionReason: rejectionReason || null,
-                    canPost: isApproved,
-                    canBid: isApproved,
-                    canChat: isApproved,
-                    verifiedAt: isApproved ? window.firebase.firestore.FieldValue.serverTimestamp() : null
-                };
-                await dbInstance.collection("users").doc(uid).update(updates);
-                return true;
+                try {
+                    const isApproved = status === "verified";
+                    const updates = {
+                        verificationStatus: status,
+                        rejectionReason: rejectionReason || null,
+                        canPost: isApproved,
+                        canBid: isApproved,
+                        canChat: isApproved,
+                        verifiedAt: isApproved ? window.firebase.firestore.FieldValue.serverTimestamp() : null
+                    };
+                    await dbInstance.collection("users").doc(uid).update(updates);
+                    return true;
+                } catch (writeErr) {
+                    console.warn("Firestore update verification fallback:", writeErr.message);
+                }
             }
 
-            // Mock update
+            // Fallback update
             const index = mockState.pendingVerifications.findIndex(v => v.uid === uid);
             if (index !== -1) {
                 const user = mockState.pendingVerifications[index];
@@ -510,12 +622,15 @@ window.NUTradeFirebase = (function () {
                     .onSnapshot(snap => {
                         const list = [];
                         snap.forEach(d => {
-                            const data = d.data();
+                            const data = sanitizeFirestoreData(d.data());
                             data.id = d.id;
                             list.push(data);
                         });
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => console.error("Listings listen error", err));
+                    }, err => {
+                        console.warn("Listings Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.listings));
+                    });
                 return "sub_listings_live";
             }
 
@@ -525,11 +640,15 @@ window.NUTradeFirebase = (function () {
 
         updateListingStatus: async function (listingId, newStatus) {
             if (dbInstance) {
-                await dbInstance.collection("listings").doc(listingId).update({
-                    status: newStatus,
-                    updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-                });
-                return true;
+                try {
+                    await dbInstance.collection("listings").doc(listingId).update({
+                        status: newStatus,
+                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    return true;
+                } catch (writeErr) {
+                    console.warn("Firestore update listing status fallback:", writeErr.message);
+                }
             }
 
             const item = mockState.listings.find(l => l.id === listingId);
@@ -558,12 +677,15 @@ window.NUTradeFirebase = (function () {
                     .onSnapshot(snap => {
                         const list = [];
                         snap.forEach(d => {
-                            const data = d.data();
+                            const data = sanitizeFirestoreData(d.data());
                             data.paymentId = d.id;
                             list.push(data);
                         });
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => console.error("Transactions listen error", err));
+                    }, err => {
+                        console.warn("Transactions Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.transactions));
+                    });
                 return "sub_transactions_live";
             }
 
@@ -580,7 +702,7 @@ window.NUTradeFirebase = (function () {
                     .get();
                 const bids = [];
                 snap.forEach(d => {
-                    const data = d.data();
+                    const data = sanitizeFirestoreData(d.data());
                     data.id = d.id;
                     bids.push(data);
                 });

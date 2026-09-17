@@ -40,6 +40,9 @@ public class UserProfile
     [JsonPropertyName("canChat")]
     public bool CanChat { get; set; }
 
+    [JsonPropertyName("emailVerified")]
+    public bool EmailVerified { get; set; }
+
     public bool IsAdmin => string.Equals(Role, "admin", StringComparison.OrdinalIgnoreCase);
     public bool IsVerified => string.Equals(VerificationStatus, "verified", StringComparison.OrdinalIgnoreCase);
 }

@@ -1,0 +1,274 @@
+@page "/security-verification"
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@inject ToastService ToastService
+@implements IDisposable
+
+<PageTitle>Admin Security Verification | NUTrade Portal</PageTitle>
+
+<div class="login-card nu-card">
+    <div class="login-brand">
+        <div class="login-logo-container">
+            <img src="images/nutradelonglogo.png" alt="NUTrade Logo" class="login-logo-img" />
+        </div>
+        <div class="login-badge-container">
+            <span class="nu-brand-badge login-admin-badge">ADMIN</span>
+        </div>
+        <p class="login-subtitle">Marketplace Administration Portal</p>
+    </div>
+
+    <div style="text-align: center; margin-bottom: 1.25rem;">
+        <div style="display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 12px; background: rgba(212, 160, 23, 0.12); border: 1px solid rgba(212, 160, 23, 0.3); color: var(--nu-gold-dark); margin-bottom: 0.75rem;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+        </div>
+        <h2 style="font-size: 1.15rem; font-weight: 800; color: var(--nu-navy-dark); margin: 0 0 0.35rem 0;">Admin Security Verification</h2>
+        <p style="font-size: 0.82rem; color: var(--nu-text-muted); margin: 0; line-height: 1.45;">
+            An extra layer of protection is required for <strong>@(AuthService.CurrentUser?.Email ?? "your admin account")</strong>. A 6-digit security code has been sent to your email inbox.
+        </p>
+    </div>
+
+    <div class="login-notice" style="background: #FFFBEB; border-left: 3px solid var(--nu-gold-primary); margin-bottom: 1.25rem; padding: 0.75rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+        <div>
+            <div style="font-size: 0.72rem; font-weight: 700; color: #78350F; text-transform: uppercase; letter-spacing: 0.05em;">Security Code Expiration</div>
+            <div style="font-size: 0.8rem; color: #92400E; margin-top: 0.15rem;">
+                @if (_isExpired)
+                {
+                    <span style="color: var(--nu-danger); font-weight: 700;">Code Expired. Please generate a new code.</span>
+                }
+                else
+                {
+                    <span>Code valid for <strong style="font-family: monospace; font-size: 0.95rem;">@_timerText</strong></span>
+                }
+            </div>
+        </div>
+
+        <div style="font-family: monospace; font-size: 1.1rem; font-weight: 800; color: @(_isExpired ? "var(--nu-danger)" : "var(--nu-navy-dark)"); background: rgba(0,0,0,0.04); padding: 0.3rem 0.6rem; border-radius: 6px;">
+            @_timerText
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_errorMessage))
+    {
+        <div class="login-error" style="margin-bottom: 1.25rem;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <span>@_errorMessage</span>
+        </div>
+    }
+
+    <form @onsubmit="HandleVerifySubmit" @onsubmit:preventDefault>
+        <div class="nu-input-group" style="margin-bottom: 1.25rem;">
+            <label class="nu-label" for="security-code" style="text-align: center; display: block;">6-Digit Security Code</label>
+            <input id="security-code"
+                   type="text"
+                   class="nu-input"
+                   placeholder="Enter 6-digit code"
+                   maxlength="6"
+                   style="font-size: 1.25rem; font-weight: 800; letter-spacing: 0.25em; text-align: center; padding: 0.75rem; border: 2px solid var(--nu-navy-primary);"
+                   @bind="_enteredCode"
+                   disabled="@(_isVerifying || _isExpired)" />
+        </div>
+
+        <button type="submit"
+                class="btn-nu-gold"
+                style="width: 100%; padding: 0.75rem; font-size: 0.95rem; margin-bottom: 0.75rem;"
+                disabled="@(_isVerifying || _isExpired || string.IsNullOrWhiteSpace(_enteredCode))">
+            @if (_isVerifying)
+            {
+                <span class="pulse-dot" style="background-color: var(--nu-navy-dark);"></span>
+                <span>Verifying Security Code...</span>
+            }
+            else
+            {
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 11 12 14 22 4"/>
+                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                </svg>
+                <span>Verify Code & Access Console</span>
+            }
+        </button>
+    </form>
+
+    <div style="display: flex; flex-direction: column; gap: 0.5rem; text-align: center;">
+        <button type="button"
+                class="btn-nu-outline"
+                style="font-size: 0.8rem; padding: 0.5rem; width: 100%;"
+                @onclick="ResendNewCode"
+                disabled="@(_isResending || _isVerifying)">
+            @if (_isResending)
+            {
+                <span>Generating New Code...</span>
+            }
+            else
+            {
+                <span>Resend / Generate New Security Code</span>
+            }
+        </button>
+
+        <button type="button"
+                style="background: none; border: none; font-size: 0.78rem; color: var(--nu-text-muted); cursor: pointer; text-decoration: underline; margin-top: 0.4rem;"
+                @onclick="HandleCancel">
+            Cancel & Sign Out
+        </button>
+    </div>
+</div>
+
+@code {
+    private string _enteredCode = string.Empty;
+    private bool _isVerifying = false;
+    private bool _isResending = false;
+    private bool _isExpired = false;
+    private string? _errorMessage;
+
+    private System.Threading.Timer? _countdownTimer;
+    private TimeSpan _timeRemaining = TimeSpan.FromMinutes(3);
+    private string _timerText = "03:00";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthService.InitializeAsync();
+
+        // 1. Guard check: If not authenticated or email unverified, redirect to /login
+        if (AuthService.CurrentUser == null || !AuthService.CurrentUser.IsAdmin || !AuthService.CurrentUser.EmailVerified)
+        {
+            NavigationManager.NavigateTo("login");
+            return;
+        }
+
+        // 2. Guard check: If already security verified, redirect directly to /admin/dashboard
+        if (AuthService.IsSecurityVerified)
+        {
+            NavigationManager.NavigateTo("admin/dashboard");
+            return;
+        }
+
+        // Start countdown timer
+        StartTimer();
+    }
+
+    private void StartTimer()
+    {
+        _countdownTimer?.Dispose();
+        _isExpired = false;
+
+        var expiresAt = AuthService.SecurityCodeExpiresAt ?? DateTime.UtcNow.AddMinutes(3);
+        var remaining = expiresAt - DateTime.UtcNow;
+        _timeRemaining = remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+        UpdateTimerText();
+
+        _countdownTimer = new System.Threading.Timer(OnTimerTick, null, 0, 1000);
+    }
+
+    private void OnTimerTick(object? state)
+    {
+        var expiresAt = AuthService.SecurityCodeExpiresAt;
+        if (expiresAt == null) return;
+
+        var remaining = expiresAt.Value - DateTime.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            _timeRemaining = TimeSpan.Zero;
+            _isExpired = true;
+            _timerText = "00:00";
+            _errorMessage = "This security code has expired. A new code is now required.";
+            _countdownTimer?.Dispose();
+        }
+        else
+        {
+            _timeRemaining = remaining;
+            UpdateTimerText();
+        }
+
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void UpdateTimerText()
+    {
+        _timerText = $"{_timeRemaining.Minutes:D2}:{_timeRemaining.Seconds:D2}";
+    }
+
+    private async Task HandleVerifySubmit()
+    {
+        if (string.IsNullOrWhiteSpace(_enteredCode))
+        {
+            _errorMessage = "Invalid security code. Please try again.";
+            return;
+        }
+
+        _isVerifying = true;
+        _errorMessage = null;
+
+        try
+        {
+            var result = await AuthService.VerifySecurityCodeAsync(_enteredCode);
+            if (result.Success)
+            {
+                _countdownTimer?.Dispose();
+                NavigationManager.NavigateTo("admin/dashboard");
+            }
+            else
+            {
+                _errorMessage = result.ErrorMessage ?? "Invalid security code. Please try again.";
+                if (result.IsExpired)
+                {
+                    _isExpired = true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Unable to verify the security code. Please try again. ({ex.Message})";
+        }
+        finally
+        {
+            _isVerifying = false;
+        }
+    }
+
+    private async Task ResendNewCode()
+    {
+        _isResending = true;
+        _errorMessage = null;
+        _enteredCode = string.Empty;
+
+        try
+        {
+            var result = await AuthService.GenerateSecurityCodeAsync();
+            if (result.Success)
+            {
+                StartTimer();
+                ToastService.ShowSuccess("New 6-digit security code generated and sent.", "Code Resent");
+            }
+            else
+            {
+                _errorMessage = result.ErrorMessage ?? "Unable to generate a new security code.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
+        }
+        finally
+        {
+            _isResending = false;
+        }
+    }
+
+    private async Task HandleCancel()
+    {
+        _countdownTimer?.Dispose();
+        await AuthService.SignOutAsync();
+        NavigationManager.NavigateTo("login");
+    }
+
+    public void Dispose()
+    {
+        _countdownTimer?.Dispose();
+    }
+}

@@ -8,11 +8,13 @@
 
 <div class="login-card nu-card">
     <div class="login-brand">
-        <h1 style="font-size: 1.65rem; font-weight: 800; margin: 0 0 0.3rem;">
-            <span style="color: var(--nu-gold-primary);">NU</span><span style="color: var(--nu-navy-primary);">Trade</span>
-            <span class="nu-brand-badge" style="font-size: 0.75rem; vertical-align: middle; margin-left: 0.3rem;">ADMIN</span>
-        </h1>
-        <p>Marketplace Administration Portal</p>
+        <div class="login-logo-container">
+            <img src="images/nutradelonglogo.png" alt="NUTrade Logo" class="login-logo-img" />
+        </div>
+        <div class="login-badge-container">
+            <span class="nu-brand-badge login-admin-badge">ADMIN</span>
+        </div>
+        <p class="login-subtitle">Marketplace Administration Portal</p>
     </div>
 
     <div class="login-notice">
@@ -20,7 +22,39 @@
         <div class="login-notice-body">Admin privileges and verified institutional credentials required.</div>
     </div>
 
-    @if (!string.IsNullOrEmpty(_authErrorMessage))
+    @if (_isEmailUnverified)
+    {
+        <div class="login-notice" style="background: #FFFBEB; border-left: 3px solid var(--nu-gold-primary); margin-bottom: 1.25rem; padding: 0.85rem 1rem;">
+            <div class="login-notice-title" style="color: var(--nu-gold-dark); font-weight: 800; font-size: 0.78rem;">EMAIL VERIFICATION REQUIRED</div>
+            <div class="login-notice-body" style="color: #78350F; margin-top: 0.35rem; margin-bottom: 0.75rem; font-size: 0.82rem; line-height: 1.45;">
+                Your admin account email (<strong>@_unverifiedEmail</strong>) is not yet verified in Firebase Authentication. Please check your inbox and verify your email to unlock access.
+            </div>
+
+            <button type="button"
+                    class="btn-nu-gold"
+                    style="font-size: 0.8rem; padding: 0.45rem 0.85rem; width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.4rem;"
+                    @onclick="ResendVerification"
+                    disabled="@_isResending">
+                @if (_isResending)
+                {
+                    <span class="pulse-dot" style="background-color: var(--nu-navy-dark);"></span>
+                    <span>Sending Verification Email...</span>
+                }
+                else
+                {
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 13V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 2 2h9"/>
+                        <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                        <path d="M19 16v6"/>
+                        <path d="M16 19h6"/>
+                    </svg>
+                    <span>Resend Verification Email</span>
+                }
+            </button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(_authErrorMessage) && !_isEmailUnverified)
     {
         <div class="login-error">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -39,7 +73,7 @@
             <label class="nu-label" for="admin-email">NU Institutional Email</label>
             <InputText id="admin-email"
                        class="nu-input"
-                       placeholder="e.g. admin@lipa.nu.edu.ph"
+                       placeholder="Enter your administrative email address"
                        @bind-Value="_loginModel.Email"
                        disabled="@_isProcessing" />
             <ValidationMessage For="@(() => _loginModel.Email)" class="validation-message" style="font-size: 0.78rem; margin-top: 0.35rem; display: block;" />
@@ -53,7 +87,7 @@
             <InputText id="admin-password"
                        type="password"
                        class="nu-input"
-                       placeholder="Enter your administrative password"
+                       placeholder="Enter your password"
                        @bind-Value="_loginModel.Password"
                        disabled="@_isProcessing" />
             <ValidationMessage For="@(() => _loginModel.Password)" class="validation-message" style="font-size: 0.78rem; margin-top: 0.35rem; display: block;" />
@@ -87,81 +121,67 @@
             }
         </button>
     </EditForm>
-
-    <div class="login-demo">
-        <div class="login-demo-label">Evaluation Credentials Quick Select</div>
-        <div class="login-demo-grid">
-            <button type="button"
-                    class="btn-nu-outline"
-                    @onclick="PreFillAdmin">
-                <span style="font-weight: 700; color: var(--nu-navy-primary);">Verified Admin</span>
-                <span style="font-size: 0.65rem; color: var(--nu-success);">Passes RBAC</span>
-            </button>
-
-            <button type="button"
-                    class="btn-nu-outline"
-                    @onclick="PreFillUnauthorized">
-                <span style="font-weight: 700; color: var(--nu-danger);">Student Account</span>
-                <span style="font-size: 0.65rem; color: var(--nu-danger);">Triggers 403</span>
-            </button>
-        </div>
-    </div>
 </div>
 
 @code {
     private readonly LoginRequest _loginModel = new()
     {
-        Email = "admin@lipa.nu.edu.ph",
-        Password = "AdminSecurePassword2026!"
+        Email = string.Empty,
+        Password = string.Empty
     };
 
     private bool _isProcessing = false;
+    private bool _isResending = false;
+    private bool _isEmailUnverified = false;
+    private string? _unverifiedEmail;
     private string? _authErrorMessage;
 
     protected override async Task OnInitializedAsync()
     {
         await AuthService.InitializeAsync();
 
-        // If already authenticated with verified admin status, redirect to dashboard
-        if (AuthService.IsAuthenticated)
+        if (AuthService.IsSecurityVerified)
         {
             NavigationManager.NavigateTo("admin/dashboard");
         }
+        else if (AuthService.CurrentUser != null && AuthService.CurrentUser.EmailVerified)
+        {
+            NavigationManager.NavigateTo("security-verification");
+        }
     }
 
-    private void PreFillAdmin()
+    private async Task ResendVerification()
     {
-        _loginModel.Email = "admin@lipa.nu.edu.ph";
-        _loginModel.Password = "AdminSecurePassword2026!";
-        _authErrorMessage = null;
-    }
-
-    private void PreFillUnauthorized()
-    {
-        _loginModel.Email = "student.unauthorized@lipa.nu.edu.ph";
-        _loginModel.Password = "StudentPass123!";
-        _authErrorMessage = null;
+        _isResending = true;
+        await AuthService.ResendEmailVerificationAsync(_unverifiedEmail);
+        _isResending = false;
     }
 
     private async Task HandleLogin()
     {
         _isProcessing = true;
         _authErrorMessage = null;
+        _isEmailUnverified = false;
 
         try
         {
-            // Execute Firebase Authentication and Firestore users/{uid} RBAC check
+            // Execute Firebase Authentication and emailVerification & RBAC check
             var result = await AuthService.SignInAsync(_loginModel.Email, _loginModel.Password);
 
-            if (result.Success && result.User != null && result.User.IsAdmin && result.User.IsVerified)
+            if (result.IsEmailUnverified)
             {
-                // Route to /admin/dashboard on successful RBAC verification
-                NavigationManager.NavigateTo("admin/dashboard");
+                _isEmailUnverified = true;
+                _unverifiedEmail = result.UnverifiedEmail ?? _loginModel.Email;
+                _authErrorMessage = result.ErrorMessage;
+            }
+            else if (result.Success && result.RequiresSecurityVerification)
+            {
+                // Route to /security-verification step before granting dashboard access
+                NavigationManager.NavigateTo("security-verification");
             }
             else
             {
-                // RBAC failure: terminate session and render error message
-                _authErrorMessage = result.ErrorMessage ?? "Unauthorized access: Admin privileges required.";
+                _authErrorMessage = result.ErrorMessage ?? "Unauthorized access: Admin privileges and verified email required.";
             }
         }
         catch (Exception ex)
