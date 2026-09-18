@@ -15,16 +15,19 @@ public class FirestoreService : IFirestoreService
     private List<UserProfile> _pendingVerifications = new();
     private List<MarketplaceListing> _activeListings = new();
     private List<TransactionLedger> _transactions = new();
+    private List<UserProfile> _allUsers = new();
 
     public DashboardMetrics Metrics => _metrics;
     public IReadOnlyList<UserProfile> PendingVerifications => _pendingVerifications;
     public IReadOnlyList<MarketplaceListing> ActiveListings => _activeListings;
     public IReadOnlyList<TransactionLedger> Transactions => _transactions;
+    public IReadOnlyList<UserProfile> AllUsers => _allUsers;
 
     public event Action? OnMetricsUpdated;
     public event Action? OnVerificationsUpdated;
     public event Action? OnListingsUpdated;
     public event Action? OnTransactionsUpdated;
+    public event Action? OnAllUsersUpdated;
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -49,12 +52,33 @@ public class FirestoreService : IFirestoreService
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToPendingVerifications", _dotNetRef, nameof(OnVerificationsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToListings", _dotNetRef, nameof(OnListingsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToTransactions", _dotNetRef, nameof(OnTransactionsReceived));
+            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToAllUsers", _dotNetRef, nameof(OnAllUsersReceived));
 
             _isSubscribed = true;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[FirestoreService] Subscription init error: {ex.Message}");
+        }
+    }
+
+    public async Task UnsubscribeAllAsync()
+    {
+        if (!_isSubscribed && _dotNetRef == null) return;
+
+        try
+        {
+            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.unsubscribeAll");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FirestoreService] Unsubscribe error: {ex.Message}");
+        }
+        finally
+        {
+            _isSubscribed = false;
+            _dotNetRef?.Dispose();
+            _dotNetRef = null;
         }
     }
 
@@ -127,6 +151,24 @@ public class FirestoreService : IFirestoreService
         catch (Exception ex)
         {
             Console.WriteLine($"[FirestoreService] Transactions parse error: {ex.Message}");
+        }
+    }
+
+    [JSInvokable]
+    public void OnAllUsersReceived(string json)
+    {
+        try
+        {
+            var data = JsonSerializer.Deserialize<List<UserProfile>>(json, JsonOpts);
+            if (data != null)
+            {
+                _allUsers = data;
+                OnAllUsersUpdated?.Invoke();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FirestoreService] AllUsers parse error: {ex.Message}");
         }
     }
 
@@ -218,7 +260,6 @@ public class FirestoreService : IFirestoreService
 
     public async ValueTask DisposeAsync()
     {
-        _dotNetRef?.Dispose();
-        await Task.CompletedTask;
+        await UnsubscribeAllAsync();
     }
 }

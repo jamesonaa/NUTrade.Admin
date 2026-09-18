@@ -18,7 +18,10 @@ window.NUTradeFirebase = (function () {
     let isInitialized = false;
     let authInstance = null;
     let dbInstance = null;
+    // Callbacks used by the mock/simulated path
     let activeSubscriptions = new Map();
+    // Live Firestore onSnapshot unsubscribe functions (key -> unsub)
+    let liveUnsubscribers = new Map();
 
     // Mock state store for development / preview when Firebase SDK is offline or unconfigured
     let mockState = {
@@ -87,6 +90,47 @@ window.NUTradeFirebase = (function () {
                 canPost: false,
                 canBid: false,
                 canChat: false
+            }
+        ],
+        allUsers: [
+            {
+                uid: "usr_nu_2024_001",
+                email: "juan.delacruz@gmail.com",
+                displayName: "Juan Dela Cruz",
+                role: "student",
+                verificationStatus: "pending",
+                photoUrl: "",
+                createdAt: "2026-09-03T08:30:00Z",
+                submittedAt: "2026-09-04T07:15:00Z",
+                canPost: false,
+                canBid: false,
+                canChat: false
+            },
+            {
+                uid: "usr_nu_2024_002",
+                email: "maria.santos@yahoo.com",
+                displayName: "Maria Santos",
+                role: "student",
+                verificationStatus: "pending",
+                photoUrl: "",
+                createdAt: "2026-09-02T10:00:00Z",
+                submittedAt: "2026-09-04T08:45:00Z",
+                canPost: false,
+                canBid: false,
+                canChat: false
+            },
+            {
+                uid: "usr_nu_2024_005",
+                email: "carlos.mendoza@gmail.com",
+                displayName: "Carlos Mendoza",
+                role: "student",
+                verificationStatus: "verified",
+                photoUrl: "",
+                createdAt: "2026-09-01T08:30:00Z",
+                submittedAt: "2026-09-01T09:00:00Z",
+                canPost: true,
+                canBid: true,
+                canChat: true
             }
         ],
         listings: [
@@ -279,6 +323,34 @@ window.NUTradeFirebase = (function () {
                 }
             }
         }
+    }
+
+    function registerCallback(key, dotNetHelper, methodName) {
+        if (!activeSubscriptions.has(key)) activeSubscriptions.set(key, []);
+        const subs = activeSubscriptions.get(key);
+        const already = subs.some(s => s.dotNetHelper === dotNetHelper && s.methodName === methodName);
+        if (!already) {
+            subs.push({ dotNetHelper, methodName });
+        }
+    }
+
+    function storeLiveUnsubscriber(key, unsub) {
+        if (liveUnsubscribers.has(key)) {
+            try { liveUnsubscribers.get(key)(); } catch (e) { /* ignore */ }
+        }
+        liveUnsubscribers.set(key, unsub);
+    }
+
+    function unsubscribeAll() {
+        for (const [key, unsub] of liveUnsubscribers.entries()) {
+            try {
+                unsub();
+            } catch (e) {
+                console.warn(`NUTrade: Failed to unsubscribe '${key}':`, e);
+            }
+        }
+        liveUnsubscribers.clear();
+        activeSubscriptions.clear();
     }
 
     function sanitizeFirestoreData(obj) {
@@ -509,6 +581,7 @@ window.NUTradeFirebase = (function () {
         },
 
         signOut: async function () {
+            unsubscribeAll();
             if (authInstance) {
                 await authInstance.signOut();
             }
@@ -516,11 +589,16 @@ window.NUTradeFirebase = (function () {
             return true;
         },
 
+        // Explicit cleanup for Blazor Dispose / logout paths
+        unsubscribeAll: function () {
+            unsubscribeAll();
+            return true;
+        },
+
         // 2. Real-time Metrics & Gross Revenue Listener
         subscribeToMetrics: function (dotNetHelper, methodName) {
             const key = "metrics";
-            if (!activeSubscriptions.has(key)) activeSubscriptions.set(key, []);
-            activeSubscriptions.get(key).push({ dotNetHelper, methodName });
+            registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
                 const unsub = dbInstance.collection("system").doc("metrics")
@@ -535,6 +613,7 @@ window.NUTradeFirebase = (function () {
                         console.warn("Metrics Firestore permission/read fallback:", err.message);
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
                     });
+                storeLiveUnsubscriber(key, unsub);
                 return "sub_metrics_live";
             }
 
@@ -546,8 +625,7 @@ window.NUTradeFirebase = (function () {
         // 3. Pending Verifications Queue Listener
         subscribeToPendingVerifications: function (dotNetHelper, methodName) {
             const key = "verifications";
-            if (!activeSubscriptions.has(key)) activeSubscriptions.set(key, []);
-            activeSubscriptions.get(key).push({ dotNetHelper, methodName });
+            registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
                 const unsub = dbInstance.collection("users")
@@ -564,6 +642,7 @@ window.NUTradeFirebase = (function () {
                         console.warn("Verifications Firestore permission/read fallback:", err.message);
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingVerifications));
                     });
+                storeLiveUnsubscriber(key, unsub);
                 return "sub_verifications_live";
             }
 
@@ -587,11 +666,12 @@ window.NUTradeFirebase = (function () {
                     await dbInstance.collection("users").doc(uid).update(updates);
                     return true;
                 } catch (writeErr) {
-                    console.warn("Firestore update verification fallback:", writeErr.message);
+                    console.error("Firestore update verification failed:", writeErr);
+                    throw new Error(writeErr.message || "Failed to update user in Firebase.");
                 }
             }
 
-            // Fallback update
+            // Fallback update only if DB instance is not connected
             const index = mockState.pendingVerifications.findIndex(v => v.uid === uid);
             if (index !== -1) {
                 const user = mockState.pendingVerifications[index];
@@ -604,17 +684,55 @@ window.NUTradeFirebase = (function () {
                 mockState.pendingVerifications.splice(index, 1);
                 mockState.metrics.pendingVerificationsCount = mockState.pendingVerifications.length;
 
+                // Also update in allUsers if it exists
+                if (mockState.allUsers) {
+                    const allUserIndex = mockState.allUsers.findIndex(u => u.uid === uid);
+                    if (allUserIndex !== -1) {
+                        mockState.allUsers[allUserIndex].verificationStatus = status;
+                        mockState.allUsers[allUserIndex].canPost = status === "verified";
+                        mockState.allUsers[allUserIndex].canBid = status === "verified";
+                        mockState.allUsers[allUserIndex].canChat = status === "verified";
+                        notifySubscribers("allUsers", mockState.allUsers);
+                    }
+                }
+
                 notifySubscribers("verifications", mockState.pendingVerifications);
                 notifySubscribers("metrics", mockState.metrics);
             }
             return true;
         },
 
+        subscribeToAllUsers: function (dotNetHelper, methodName) {
+            const key = "allUsers";
+            registerCallback(key, dotNetHelper, methodName);
+
+            if (dbInstance) {
+                const unsub = dbInstance.collection("users")
+                    .orderBy("createdAt", "desc")
+                    .onSnapshot(snap => {
+                        const list = [];
+                        snap.forEach(d => {
+                            const data = sanitizeFirestoreData(d.data());
+                            data.uid = d.id;
+                            list.push(data);
+                        });
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                    }, err => {
+                        console.warn("AllUsers Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.allUsers));
+                    });
+                storeLiveUnsubscriber(key, unsub);
+                return "sub_allusers_live";
+            }
+
+            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.allUsers));
+            return "sub_allusers_mock";
+        },
+
         // 4. Listing Moderation & Realtime Active Listings
         subscribeToListings: function (dotNetHelper, methodName) {
             const key = "listings";
-            if (!activeSubscriptions.has(key)) activeSubscriptions.set(key, []);
-            activeSubscriptions.get(key).push({ dotNetHelper, methodName });
+            registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
                 const unsub = dbInstance.collection("listings")
@@ -631,6 +749,7 @@ window.NUTradeFirebase = (function () {
                         console.warn("Listings Firestore permission/read fallback:", err.message);
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.listings));
                     });
+                storeLiveUnsubscriber(key, unsub);
                 return "sub_listings_live";
             }
 
@@ -667,8 +786,7 @@ window.NUTradeFirebase = (function () {
         // 5. Audit Trail Transactions Ledger
         subscribeToTransactions: function (dotNetHelper, methodName) {
             const key = "transactions";
-            if (!activeSubscriptions.has(key)) activeSubscriptions.set(key, []);
-            activeSubscriptions.get(key).push({ dotNetHelper, methodName });
+            registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
                 const unsub = dbInstance.collection("transactions")
@@ -686,6 +804,7 @@ window.NUTradeFirebase = (function () {
                         console.warn("Transactions Firestore permission/read fallback:", err.message);
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.transactions));
                     });
+                storeLiveUnsubscriber(key, unsub);
                 return "sub_transactions_live";
             }
 

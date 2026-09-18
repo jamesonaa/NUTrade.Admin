@@ -10,6 +10,7 @@ public class FirebaseAuthService : IFirebaseAuthService
 {
     private readonly IJSRuntime _jsRuntime;
     private readonly ToastService _toastService;
+    private readonly IFirestoreService _firestoreService;
     private UserProfile? _currentUser;
     private bool _isSecurityVerified = false;
     private DateTime? _securityCodeExpiresAt;
@@ -22,10 +23,11 @@ public class FirebaseAuthService : IFirebaseAuthService
     public string? LastGeneratedCode => _lastGeneratedCode;
     public event Action? OnAuthStateChanged;
 
-    public FirebaseAuthService(IJSRuntime jsRuntime, ToastService toastService)
+    public FirebaseAuthService(IJSRuntime jsRuntime, ToastService toastService, IFirestoreService firestoreService)
     {
         _jsRuntime = jsRuntime;
         _toastService = toastService;
+        _firestoreService = firestoreService;
     }
 
     public async Task InitializeAsync()
@@ -258,6 +260,9 @@ public class FirebaseAuthService : IFirebaseAuthService
     {
         try
         {
+            // Tear down Firestore real-time listeners before auth sign-out so they
+            // can be safely re-initialized on the next login without duplicates.
+            await _firestoreService.UnsubscribeAllAsync();
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.signOut");
         }
         catch

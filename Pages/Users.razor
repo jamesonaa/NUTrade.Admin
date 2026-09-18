@@ -1,0 +1,185 @@
+@page "/admin/users"
+@inject IFirestoreService FirestoreService
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@implements IDisposable
+
+<PageTitle>Users Management | NUTrade Admin</PageTitle>
+
+<div style="display: flex; flex-direction: column; gap: 1.25rem;">
+
+    <div class="vu-page-header">
+        <div class="vu-title-block">
+            <div class="vu-title-icon">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--nu-gold-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+            </div>
+            <div>
+                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                    <span class="badge-pill badge-pill-gold">View Only</span>
+                </div>
+                <h1 style="font-size: 1.35rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0 0 0.25rem;">
+                    Users Management
+                </h1>
+                <p style="font-size: 0.85rem; color: var(--nu-text-muted); margin: 0; max-width: 520px; line-height: 1.45;">
+                    View the list of all registered users in NUTrade, including their verification statuses.
+                </p>
+            </div>
+        </div>
+
+        <div class="vu-stats">
+            <div class="vu-stat-chip">
+                <span><strong>@FirestoreService.AllUsers.Count</strong> total users</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="nu-card">
+        @{
+            var rows = FilteredUsers.ToList();
+        }
+        <div class="vu-toolbar">
+            <div class="vu-search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input type="text"
+                       class="nu-input"
+                       placeholder="Search by name or email..."
+                       @bind="_searchFilter"
+                       @bind:event="oninput" />
+            </div>
+            <div class="vu-sort-hint">
+                @if (!string.IsNullOrWhiteSpace(_searchFilter))
+                {
+                    <span>@rows.Count result@(rows.Count == 1 ? "" : "s")</span>
+                    <span style="opacity: 0.4;">·</span>
+                }
+                <span>Sorted by registration time</span>
+            </div>
+        </div>
+
+        @if (rows.Count > 0)
+        {
+            <div class="vu-list">
+                @foreach (var student in rows)
+                {
+                    <div class="vu-row">
+                        <div class="vu-student">
+                            <div class="vu-avatar">
+                                @(student.DisplayName?.Length > 0 ? student.DisplayName[0].ToString().ToUpper() : "?")
+                            </div>
+                            <div style="min-width: 0;">
+                                <div class="vu-name">@student.DisplayName</div>
+                                <div class="vu-uid">@TruncateUid(student.Uid)</div>
+                            </div>
+                        </div>
+
+                        <div class="vu-email" title="@student.Email">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect width="20" height="16" x="2" y="4" rx="2"/>
+                                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                            </svg>
+                            <span style="overflow: hidden; text-overflow: ellipsis;">@student.Email</span>
+                        </div>
+
+                        <div class="vu-time" style="width: 140px;">
+                            <div style="font-size: 0.8rem; font-weight: 500; text-transform: capitalize; color: @GetStatusColor(student.VerificationStatus)">
+                                @(string.IsNullOrEmpty(student.VerificationStatus) ? "Unknown" : student.VerificationStatus)
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="vu-empty">
+                <div class="vu-empty-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                    </svg>
+                </div>
+                @if (string.IsNullOrWhiteSpace(_searchFilter))
+                {
+                    <h3>No users found</h3>
+                    <p>There are no registered users in the database.</p>
+                }
+                else
+                {
+                    <h3>No matches</h3>
+                    <p>Nothing found for “@_searchFilter”.</p>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private string _searchFilter = string.Empty;
+
+    private IEnumerable<UserProfile> FilteredUsers
+    {
+        get
+        {
+            var query = FirestoreService.AllUsers.AsEnumerable();
+
+            if (!string.IsNullOrWhiteSpace(_searchFilter))
+            {
+                query = query.Where(u =>
+                    (u.DisplayName != null && u.DisplayName.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)) ||
+                    (u.Email != null && u.Email.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            return query;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!AuthService.IsAuthenticated)
+        {
+            NavigationManager.NavigateTo("login");
+            return;
+        }
+
+        if (!AuthService.IsSecurityVerified)
+        {
+            NavigationManager.NavigateTo("security-verification");
+            return;
+        }
+
+        FirestoreService.OnAllUsersUpdated += HandleUpdate;
+        await FirestoreService.InitializeSubscriptionsAsync();
+    }
+
+    private void HandleUpdate() => InvokeAsync(StateHasChanged);
+
+    private static string TruncateUid(string uid)
+    {
+        if (string.IsNullOrEmpty(uid)) return "—";
+        return uid.Length <= 16 ? uid : $"{uid[..16]}…";
+    }
+
+    private string GetStatusColor(string? status)
+    {
+        return status?.ToLowerInvariant() switch
+        {
+            "verified" => "var(--nu-success)",
+            "pending" => "var(--nu-warning)",
+            "rejected" => "var(--nu-danger)",
+            _ => "var(--nu-text-muted)"
+        };
+    }
+
+    public void Dispose()
+    {
+        FirestoreService.OnAllUsersUpdated -= HandleUpdate;
+    }
+}

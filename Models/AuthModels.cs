@@ -4,7 +4,7 @@ namespace NUTrade.Admin.Models;
 
 public class LoginRequest
 {
-    [Required(ErrorMessage = "NU Email address is required.")]
+    [Required(ErrorMessage = "Admin Email address is required.")]
     [EmailAddress(ErrorMessage = "Please enter a valid email format.")]
     public string Email { get; set; } = string.Empty;
 
