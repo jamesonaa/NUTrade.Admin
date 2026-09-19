@@ -55,7 +55,13 @@
             <polyline points="2 12 12 17 22 12"/>
         </svg>
         <span style="flex: 1;">Listing Moderation</span>
-        @if (FirestoreService.ActiveListings.Count > 0)
+        @if (FirestoreService.PendingApprovalListings.Count > 0)
+        {
+            <span class="nu-nav-count accent" title="@FirestoreService.PendingApprovalListings.Count listings awaiting approval">
+                @FirestoreService.PendingApprovalListings.Count
+            </span>
+        }
+        else if (FirestoreService.ActiveListings.Count > 0)
         {
             <span class="nu-nav-count">
                 @FirestoreService.ActiveListings.Count
@@ -94,6 +100,7 @@
     {
         FirestoreService.OnVerificationsUpdated += StateHasChanged;
         FirestoreService.OnListingsUpdated += StateHasChanged;
+        FirestoreService.OnPendingListingsUpdated += StateHasChanged;
         AuthService.OnAuthStateChanged += StateHasChanged;
     }
 
@@ -107,6 +114,8 @@
     {
         FirestoreService.OnVerificationsUpdated -= StateHasChanged;
         FirestoreService.OnListingsUpdated -= StateHasChanged;
+        FirestoreService.OnPendingListingsUpdated -= StateHasChanged;
         AuthService.OnAuthStateChanged -= StateHasChanged;
     }
 }
+

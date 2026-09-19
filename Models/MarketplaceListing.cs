@@ -10,6 +10,9 @@ public class MarketplaceListing
     [JsonPropertyName("title")]
     public string Title { get; set; } = string.Empty;
 
+    [JsonPropertyName("description")]
+    public string Description { get; set; } = string.Empty;
+
     [JsonPropertyName("category")]
     public string Category { get; set; } = "General";
 
@@ -32,10 +35,31 @@ public class MarketplaceListing
     public decimal StartingPrice { get; set; }
 
     [JsonPropertyName("status")]
-    public string Status { get; set; } = "active"; // "active", "unpublished", "sold", "expired"
+    public string Status { get; set; } = "active"; // "draft", "pending_payment", "pending_approval", "active", "rejected", "unpublished", "sold", "expired"
+
+    [JsonPropertyName("paidPackage")]
+    public string PaidPackage { get; set; } = "Free"; // "Free", "Standard Post", "Priority Pin"
 
     [JsonPropertyName("auctionEndsAt")]
-    public DateTime AuctionEndsAt { get; set; } = DateTime.UtcNow.AddHours(24);
+    public DateTime? AuctionEndsAt { get; set; }
+
+    [JsonPropertyName("publishedAt")]
+    public DateTime? PublishedAt { get; set; }
+
+    [JsonPropertyName("approvedAt")]
+    public DateTime? ApprovedAt { get; set; }
+
+    [JsonPropertyName("approvedBy")]
+    public string ApprovedBy { get; set; } = string.Empty;
+
+    [JsonPropertyName("rejectedAt")]
+    public DateTime? RejectedAt { get; set; }
+
+    [JsonPropertyName("rejectedBy")]
+    public string RejectedBy { get; set; } = string.Empty;
+
+    [JsonPropertyName("rejectionReason")]
+    public string RejectionReason { get; set; } = string.Empty;
 
     [JsonPropertyName("isPinned")]
     public bool IsPinned { get; set; }
@@ -47,8 +71,10 @@ public class MarketplaceListing
     public int TotalBids { get; set; }
 
     [JsonPropertyName("createdAt")]
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? CreatedAt { get; set; }
 
-    public TimeSpan RemainingTime => AuctionEndsAt > DateTime.UtcNow ? AuctionEndsAt - DateTime.UtcNow : TimeSpan.Zero;
-    public bool IsExpired => AuctionEndsAt <= DateTime.UtcNow;
+    public TimeSpan RemainingTime => AuctionEndsAt.HasValue && AuctionEndsAt.Value > DateTime.UtcNow
+        ? AuctionEndsAt.Value - DateTime.UtcNow
+        : TimeSpan.Zero;
+    public bool IsExpired => AuctionEndsAt.HasValue && AuctionEndsAt.Value <= DateTime.UtcNow;
 }

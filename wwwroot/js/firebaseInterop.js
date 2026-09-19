@@ -203,6 +203,62 @@ window.NUTradeFirebase = (function () {
                 createdAt: "2026-09-04T01:00:00Z"
             }
         ],
+        pendingListings: [
+            {
+                id: "lst_pending_201",
+                title: "Calculus & Analytical Geometry (9th Edition)",
+                description: "Pre-loved textbook for engineering students. In excellent condition with clean pages.",
+                category: "Textbooks",
+                sellerUid: "usr_nu_2024_001",
+                sellerName: "Juan Dela Cruz",
+                sellerEmail: "delacruz.juan@lipa.nu.edu.ph",
+                currentHighestBid: 450.00,
+                reservePrice: 400.00,
+                startingPrice: 300.00,
+                status: "pending_approval",
+                paidPackage: "Free",
+                isPinned: false,
+                imageUrl: "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&auto=format&fit=crop&q=80",
+                totalBids: 0,
+                createdAt: "2026-09-19T08:30:00Z"
+            },
+            {
+                id: "lst_pending_202",
+                title: "Engineering Scientific Calculator FX-991EX",
+                description: "Original Casio ClassWiz calculator required for Board exams. Battery freshly replaced.",
+                category: "Electronics",
+                sellerUid: "usr_nu_2024_002",
+                sellerName: "Maria Santos",
+                sellerEmail: "santos.maria@lipa.nu.edu.ph",
+                currentHighestBid: 1200.00,
+                reservePrice: 1000.00,
+                startingPrice: 800.00,
+                status: "pending_approval",
+                paidPackage: "Priority Pin",
+                isPinned: true,
+                imageUrl: "https://images.unsplash.com/photo-1611125832047-1d7ad1e8e48a?w=400&auto=format&fit=crop&q=80",
+                totalBids: 0,
+                createdAt: "2026-09-19T09:15:00Z"
+            },
+            {
+                id: "lst_pending_203",
+                title: "Official NU College Hoodie - Size L",
+                description: "Official National University navy blue hoodie jacket. Worn twice, like new.",
+                category: "Uniforms",
+                sellerUid: "usr_nu_2024_003",
+                sellerName: "Christian Reyes",
+                sellerEmail: "reyes.christian@lipa.nu.edu.ph",
+                currentHighestBid: 750.00,
+                reservePrice: 600.00,
+                startingPrice: 500.00,
+                status: "pending_approval",
+                paidPackage: "Standard Post",
+                isPinned: false,
+                imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=400&auto=format&fit=crop&q=80",
+                totalBids: 0,
+                createdAt: "2026-09-19T10:00:00Z"
+            }
+        ],
         transactions: [
             {
                 paymentId: "pay_pm_live_9941a823",
@@ -729,7 +785,115 @@ window.NUTradeFirebase = (function () {
             return "sub_allusers_mock";
         },
 
-        // 4. Listing Moderation & Realtime Active Listings
+        subscribeToPendingApprovalListings: function (dotNetHelper, methodName) {
+            const key = "pendingListings";
+            registerCallback(key, dotNetHelper, methodName);
+
+            if (dbInstance) {
+                const unsub = dbInstance.collection("listings")
+                    .where("status", "in", ["pending_approval", "pending", "pendingApproval", "Pending Approval", "pending_payment"])
+                    .onSnapshot(snap => {
+                        const list = [];
+                        snap.forEach(d => {
+                            const data = sanitizeFirestoreData(d.data());
+                            data.id = d.id;
+                            if (!data.status || data.status === "pending" || data.status === "pendingApproval" || data.status === "Pending Approval") {
+                                data.status = "pending_approval";
+                            }
+                            list.push(data);
+                        });
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                    }, err => {
+                        console.warn("Pending Listings Firestore permission/read fallback:", err.message);
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingListings));
+                    });
+                storeLiveUnsubscriber(key, unsub);
+                return "sub_pending_listings_live";
+            }
+
+            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingListings));
+            return "sub_pending_listings_mock";
+        },
+
+        approveListing: async function (listingId) {
+            if (typeof window.firebase !== "undefined" && window.firebase.functions) {
+                try {
+                    const approveFn = window.firebase.app().functions("asia-southeast1").httpsCallable("approveListing");
+                    const res = await approveFn({ listingId: listingId });
+                    if (res.data && res.data.success) return true;
+                } catch (callErr) {
+                    console.warn("Cloud function approveListing fallback:", callErr.message);
+                }
+            }
+            if (dbInstance) {
+                try {
+                    const endsAt = new Date(Date.now() + 24 * 3600 * 1000);
+                    await dbInstance.collection("listings").doc(listingId).update({
+                        status: "active",
+                        approvedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+                        approvedBy: authInstance?.currentUser?.email || "admin",
+                        publishedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+                        auctionEndsAt: endsAt.toISOString(),
+                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    return true;
+                } catch (writeErr) {
+                    console.error("Firestore approve listing error:", writeErr);
+                }
+            }
+
+            const idx = mockState.pendingListings.findIndex(l => l.id === listingId);
+            if (idx !== -1) {
+                const item = mockState.pendingListings.splice(idx, 1)[0];
+                item.status = "active";
+                item.approvedAt = new Date().toISOString();
+                item.publishedAt = new Date().toISOString();
+                item.auctionEndsAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+                mockState.listings.unshift(item);
+                mockState.metrics.activeListingsCount = mockState.listings.filter(l => l.status === "active").length;
+                notifySubscribers("pendingListings", mockState.pendingListings);
+                notifySubscribers("listings", mockState.listings);
+                notifySubscribers("metrics", mockState.metrics);
+            }
+            return true;
+        },
+
+        rejectListing: async function (listingId, rejectionReason) {
+            if (typeof window.firebase !== "undefined" && window.firebase.functions) {
+                try {
+                    const rejectFn = window.firebase.app().functions("asia-southeast1").httpsCallable("rejectListing");
+                    const res = await rejectFn({ listingId: listingId, rejectionReason: rejectionReason });
+                    if (res.data && res.data.success) return true;
+                } catch (callErr) {
+                    console.warn("Cloud function rejectListing fallback:", callErr.message);
+                }
+            }
+            if (dbInstance) {
+                try {
+                    await dbInstance.collection("listings").doc(listingId).update({
+                        status: "rejected",
+                        rejectedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+                        rejectedBy: authInstance?.currentUser?.email || "admin",
+                        rejectionReason: rejectionReason || null,
+                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                    return true;
+                } catch (writeErr) {
+                    console.error("Firestore reject listing error:", writeErr);
+                }
+            }
+
+            const idx = mockState.pendingListings.findIndex(l => l.id === listingId);
+            if (idx !== -1) {
+                const item = mockState.pendingListings.splice(idx, 1)[0];
+                item.status = "rejected";
+                item.rejectedAt = new Date().toISOString();
+                item.rejectionReason = rejectionReason || null;
+                notifySubscribers("pendingListings", mockState.pendingListings);
+            }
+            return true;
+        },
+
         subscribeToListings: function (dotNetHelper, methodName) {
             const key = "listings";
             registerCallback(key, dotNetHelper, methodName);

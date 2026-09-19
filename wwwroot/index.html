@@ -11,7 +11,9 @@
     <!-- Google Fonts: Outfit & Plus Jakarta Sans -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
 
     <!-- Stylesheets -->
     <link rel="stylesheet" href="css/app.css" />
@@ -23,8 +25,10 @@
 
 <body>
     <div id="app">
-        <div style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #F4F6F8; color: #002B5B; font-family: 'Outfit', sans-serif;">
-            <div style="width: 52px; height: 52px; border-radius: 12px; border: 1.5px solid #E5A900; background: #002B5B; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; font-weight: 800; color: #E5A900; margin-bottom: 1rem;">
+        <div
+            style="min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; background-color: #F4F6F8; color: #002B5B; font-family: 'Outfit', sans-serif;">
+            <div
+                style="width: 52px; height: 52px; border-radius: 12px; border: 1.5px solid #E5A900; background: #002B5B; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; font-weight: 800; color: #E5A900; margin-bottom: 1rem;">
                 NU
             </div>
             <div style="font-size: 1.1rem; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 0.35rem;">
@@ -33,7 +37,8 @@
             <div style="font-size: 0.82rem; color: #64748B; margin-bottom: 1.35rem;">
                 Loading admin console...
             </div>
-            <svg class="loading-progress" style="position: relative; inset: auto; margin: 0 auto; width: 3rem; height: 3rem;">
+            <svg class="loading-progress"
+                style="position: relative; inset: auto; margin: 0 auto; width: 3rem; height: 3rem;">
                 <circle r="40%" cx="50%" cy="50%" style="stroke: #E2E8F0; stroke-width: 0.35rem;" />
                 <circle r="40%" cx="50%" cy="50%" style="stroke: #002B5B; stroke-width: 0.35rem;" />
             </svg>
@@ -50,14 +55,15 @@
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-functions-compat.js"></script>
     <!-- EmailJS SDK for admin security code email delivery -->
     <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
     <!-- Firebase JS Interop Scripts -->
-    <script src="js/firebaseInterop.js"></script>
+    <script src="js/firebaseInterop.js?v=20240920_3"></script>
 
     <!-- Blazor WASM Script -->
-    <script src="_framework/blazor.webassembly#[.{fingerprint}].js"></script>
+    <script src="_framework/blazor.webassembly.js"></script>
 </body>
 
 </html>

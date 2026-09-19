@@ -14,18 +14,21 @@ public class FirestoreService : IFirestoreService
     private DashboardMetrics _metrics = new();
     private List<UserProfile> _pendingVerifications = new();
     private List<MarketplaceListing> _activeListings = new();
+    private List<MarketplaceListing> _pendingApprovalListings = new();
     private List<TransactionLedger> _transactions = new();
     private List<UserProfile> _allUsers = new();
 
     public DashboardMetrics Metrics => _metrics;
     public IReadOnlyList<UserProfile> PendingVerifications => _pendingVerifications;
     public IReadOnlyList<MarketplaceListing> ActiveListings => _activeListings;
+    public IReadOnlyList<MarketplaceListing> PendingApprovalListings => _pendingApprovalListings;
     public IReadOnlyList<TransactionLedger> Transactions => _transactions;
     public IReadOnlyList<UserProfile> AllUsers => _allUsers;
 
     public event Action? OnMetricsUpdated;
     public event Action? OnVerificationsUpdated;
     public event Action? OnListingsUpdated;
+    public event Action? OnPendingListingsUpdated;
     public event Action? OnTransactionsUpdated;
     public event Action? OnAllUsersUpdated;
 
@@ -51,6 +54,7 @@ public class FirestoreService : IFirestoreService
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToMetrics", _dotNetRef, nameof(OnMetricsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToPendingVerifications", _dotNetRef, nameof(OnVerificationsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToListings", _dotNetRef, nameof(OnListingsReceived));
+            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToPendingApprovalListings", _dotNetRef, nameof(OnPendingListingsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToTransactions", _dotNetRef, nameof(OnTransactionsReceived));
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.subscribeToAllUsers", _dotNetRef, nameof(OnAllUsersReceived));
 
@@ -137,6 +141,24 @@ public class FirestoreService : IFirestoreService
     }
 
     [JSInvokable]
+    public void OnPendingListingsReceived(string json)
+    {
+        try
+        {
+            var data = JsonSerializer.Deserialize<List<MarketplaceListing>>(json, JsonOpts);
+            if (data != null)
+            {
+                _pendingApprovalListings = data;
+                OnPendingListingsUpdated?.Invoke();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FirestoreService] Pending listings parse error: {ex.Message}");
+        }
+    }
+
+    [JSInvokable]
     public void OnTransactionsReceived(string json)
     {
         try
@@ -204,6 +226,42 @@ public class FirestoreService : IFirestoreService
         catch (Exception ex)
         {
             _toastService.ShowError($"Failed to reject student: {ex.Message}", "Action Failed");
+        }
+        return false;
+    }
+
+    public async Task<bool> ApproveListingAsync(string listingId)
+    {
+        try
+        {
+            bool ok = await _jsRuntime.InvokeAsync<bool>("NUTradeFirebase.approveListing", listingId);
+            if (ok)
+            {
+                _toastService.ShowSuccess($"Listing #{listingId} has been approved and published to the marketplace!", "Listing Approved");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _toastService.ShowError($"Failed to approve listing: {ex.Message}", "Approval Failed");
+        }
+        return false;
+    }
+
+    public async Task<bool> RejectListingAsync(string listingId, string? reason)
+    {
+        try
+        {
+            bool ok = await _jsRuntime.InvokeAsync<bool>("NUTradeFirebase.rejectListing", listingId, reason);
+            if (ok)
+            {
+                _toastService.ShowWarning($"Listing #{listingId} was rejected. Seller has been notified.", "Listing Rejected");
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _toastService.ShowError($"Failed to reject listing: {ex.Message}", "Rejection Failed");
         }
         return false;
     }

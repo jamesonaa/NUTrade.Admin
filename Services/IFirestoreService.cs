@@ -7,12 +7,14 @@ public interface IFirestoreService : IAsyncDisposable
     DashboardMetrics Metrics { get; }
     IReadOnlyList<UserProfile> PendingVerifications { get; }
     IReadOnlyList<MarketplaceListing> ActiveListings { get; }
+    IReadOnlyList<MarketplaceListing> PendingApprovalListings { get; }
     IReadOnlyList<TransactionLedger> Transactions { get; }
     IReadOnlyList<UserProfile> AllUsers { get; }
 
     event Action? OnMetricsUpdated;
     event Action? OnVerificationsUpdated;
     event Action? OnListingsUpdated;
+    event Action? OnPendingListingsUpdated;
     event Action? OnTransactionsUpdated;
     event Action? OnAllUsersUpdated;
 
@@ -20,6 +22,8 @@ public interface IFirestoreService : IAsyncDisposable
     Task UnsubscribeAllAsync();
     Task<bool> ApproveVerificationAsync(string uid);
     Task<bool> RejectVerificationAsync(string uid, string? reason);
+    Task<bool> ApproveListingAsync(string listingId);
+    Task<bool> RejectListingAsync(string listingId, string? reason);
     Task<bool> UnpublishListingAsync(string listingId);
     Task<bool> ToggleListingStatusAsync(string listingId, string newStatus);
     Task<List<BidItem>> GetListingBidsAsync(string listingId);

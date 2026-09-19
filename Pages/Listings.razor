@@ -13,27 +13,55 @@
         <div>
             <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; flex-wrap: wrap;">
                 <span class="badge-pill badge-pill-gold">Module B</span>
+                <span class="badge-pill badge-pill-navy">Approval & Moderation</span>
             </div>
-            <h1>Platform Revenue & Listing Moderation</h1>
+            <h1>Listing Approval & Marketplace Moderation</h1>
             <p>
-                Live moderation grid for active marketplace auctions. Monitor bids, reserve prices, Priority Pin promotions, and execute administrative overrides.
+                Review newly submitted student listings, verify package payments, enforce campus trading rules, and manage live marketplace auctions.
             </p>
         </div>
 
         <div class="page-header-meta">
+            <span class="badge-pill badge-pill-gold">
+                <span class="pulse-dot" style="background-color: var(--nu-gold-primary);"></span>
+                <span>@FirestoreService.PendingApprovalListings.Count Awaiting Approval</span>
+            </span>
             <span class="badge-pill badge-pill-navy">
                 <span class="pulse-dot" style="background-color: var(--nu-success);"></span>
                 <span>@FirestoreService.ActiveListings.Count Live Auctions</span>
             </span>
-            <span class="badge-pill badge-pill-gold">
-                <span>@FirestoreService.ActiveListings.Count(l => l.IsPinned) Priority Pinned</span>
-            </span>
         </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div style="display: flex; gap: 0.75rem; border-bottom: 2px solid var(--nu-border-color); padding-bottom: 0.5rem; margin-bottom: 0.25rem;">
+        <button type="button"
+                class="btn-tab @(_activeTab == "pending" ? "active" : "")"
+                style="padding: 0.6rem 1.2rem; font-weight: 700; font-size: 0.9rem; border: none; background: transparent; cursor: pointer; border-bottom: 3px solid @(_activeTab == "pending" ? "var(--nu-gold-primary)" : "transparent"); color: @(_activeTab == "pending" ? "var(--nu-navy-primary)" : "var(--nu-text-muted)"); display: flex; align-items: center; gap: 0.5rem;"
+                @onclick='() => _activeTab = "pending"'>
+            <span>Pending Approval Queue</span>
+            @if (FirestoreService.PendingApprovalListings.Count > 0)
+            {
+                <span class="badge-pill badge-pill-gold" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">
+                    @FirestoreService.PendingApprovalListings.Count
+                </span>
+            }
+        </button>
+
+        <button type="button"
+                class="btn-tab @(_activeTab == "active" ? "active" : "")"
+                style="padding: 0.6rem 1.2rem; font-weight: 700; font-size: 0.9rem; border: none; background: transparent; cursor: pointer; border-bottom: 3px solid @(_activeTab == "active" ? "var(--nu-gold-primary)" : "transparent"); color: @(_activeTab == "active" ? "var(--nu-navy-primary)" : "var(--nu-text-muted)"); display: flex; align-items: center; gap: 0.5rem;"
+                @onclick='() => _activeTab = "active"'>
+            <span>Active Marketplace Feed</span>
+            <span class="badge-pill badge-pill-navy" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">
+                @FirestoreService.ActiveListings.Count
+            </span>
+        </button>
     </div>
 
     <div class="nu-card">
         <div class="dash-toolbar">
-            <div class="nu-search-field" style="max-width: 340px;">
+            <div class="nu-search-field" style="max-width: 380px;">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
                     <circle cx="11" cy="11" r="8"/>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -46,131 +74,313 @@
             </div>
 
             <div style="font-size: 0.78rem; color: var(--nu-text-muted);">
-                Query: <code class="nu-mono" style="color: var(--nu-navy-primary); font-weight: 700;">listings.where('status', '==', 'active')</code>
+                @if (_activeTab == "pending")
+                {
+                    <span>Query: <code class="nu-mono" style="color: var(--nu-gold-primary); font-weight: 700;">listings.where('status', '==', 'pending_approval')</code></span>
+                }
+                else
+                {
+                    <span>Query: <code class="nu-mono" style="color: var(--nu-navy-primary); font-weight: 700;">listings.where('status', '==', 'active')</code></span>
+                }
             </div>
         </div>
 
-        <div class="nu-table-container">
-            <table class="nu-table">
-                <thead>
-                    <tr>
-                        <th>Listing Item</th>
-                        <th>Category</th>
-                        <th>Seller UID</th>
-                        <th>Highest Bid (₱)</th>
-                        <th>Reserve Price</th>
-                        <th>Auction Countdown</th>
-                        <th>Priority Pin</th>
-                        <th style="text-align: right;">Moderation Override</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (FilteredListings.Any())
-                    {
-                        @foreach (var listing in FilteredListings)
+        @if (_activeTab == "pending")
+        {
+            <!-- PENDING APPROVAL QUEUE -->
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Listing Details</th>
+                            <th>Category</th>
+                            <th>Seller Info</th>
+                            <th>Package & Pricing</th>
+                            <th>Submitted At</th>
+                            <th style="text-align: right;">Admin Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (FilteredPendingListings.Any())
                         {
-                            <tr>
-                                <td>
-                                    <div class="listing-item-cell">
-                                        <img src="@listing.ImageUrl"
-                                             alt="@listing.Title"
-                                             class="listing-thumb" />
-                                        <div style="max-width: 220px; min-width: 0;">
-                                            <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.88rem; line-height: 1.3;">
-                                                @listing.Title
-                                            </div>
-                                            <div class="nu-cell-sub nu-mono">
-                                                ID: @listing.Id · @listing.TotalBids bids
+                            @foreach (var listing in FilteredPendingListings)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="listing-item-cell">
+                                            <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
+                                                 alt="@listing.Title"
+                                                 class="listing-thumb" />
+                                            <div style="max-width: 260px; min-width: 0;">
+                                                <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.9rem; line-height: 1.3;">
+                                                    @listing.Title
+                                                </div>
+                                                @if (!string.IsNullOrWhiteSpace(listing.Description))
+                                                {
+                                                    <div style="font-size: 0.76rem; color: var(--nu-text-muted); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">
+                                                        @listing.Description
+                                                    </div>
+                                                }
+                                                <div class="nu-cell-sub nu-mono" style="margin-top: 2px;">
+                                                    ID: @listing.Id
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                </td>
-                                <td>
-                                    <span class="badge-pill badge-pill-navy" style="font-size: 0.72rem;">
-                                        @listing.Category
-                                    </span>
-                                </td>
-                                <td>
-                                    <div class="nu-cell-primary" style="font-size: 0.82rem;">
-                                        @listing.SellerName
-                                    </div>
-                                    <div class="nu-cell-sub nu-mono">
-                                        @listing.SellerUid
-                                    </div>
-                                </td>
-                                <td>
-                                    <div class="nu-amount" style="font-size: 1.05rem;">
-                                        ₱@listing.CurrentHighestBid.ToString("N2")
-                                    </div>
-                                    <div class="nu-cell-sub" style="color: var(--nu-success); font-weight: 600;">
-                                        Start: ₱@listing.StartingPrice.ToString("N2")
-                                    </div>
-                                </td>
-                                <td>
-                                    <div style="font-weight: 600; color: var(--nu-text-body); font-size: 0.88rem;">
-                                        ₱@listing.ReservePrice.ToString("N2")
-                                    </div>
-                                    @if (listing.CurrentHighestBid >= listing.ReservePrice)
-                                    {
-                                        <span class="badge-pill badge-pill-success" style="font-size: 0.65rem;">Met</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="badge-pill badge-pill-warning" style="font-size: 0.65rem;">Unmet</span>
-                                    }
-                                </td>
-                                <td>
-                                    <div style="font-weight: 700; font-size: 0.84rem; color: @(listing.RemainingTime.TotalHours < 3 ? "var(--nu-danger)" : "var(--nu-navy-primary)");">
-                                        @FormatTimeSpan(listing.RemainingTime)
-                                    </div>
-                                    <div class="nu-cell-sub">
-                                        Ends @listing.AuctionEndsAt.ToLocalTime().ToString("MMM dd, hh:mm tt")
-                                    </div>
-                                </td>
-                                <td>
-                                    @if (listing.IsPinned)
-                                    {
-                                        <span class="badge-pill badge-pill-gold">Pinned (₱20)</span>
-                                    }
-                                    else
-                                    {
-                                        <span style="font-size: 0.78rem; color: var(--nu-text-muted);">Standard</span>
-                                    }
-                                </td>
-                                <td style="text-align: right;">
-                                    <div class="listing-actions">
-                                        <button type="button"
-                                                class="btn-nu-danger"
-                                                style="font-size: 0.74rem; padding: 0.4rem 0.7rem;"
-                                                @onclick="() => PromptUnpublish(listing)">
-                                            Unpublish
-                                        </button>
-                                        <button type="button"
-                                                class="btn-nu-outline"
-                                                style="font-size: 0.74rem; padding: 0.4rem 0.6rem;"
-                                                title="Toggle Pin for testing"
-                                                @onclick="() => TogglePin(listing)">
-                                            @(listing.IsPinned ? "Unpin" : "Pin")
-                                        </button>
-                                    </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge-pill badge-pill-navy" style="font-size: 0.72rem;">
+                                            @listing.Category
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="nu-cell-primary" style="font-size: 0.82rem;">
+                                            @listing.SellerName
+                                        </div>
+                                        <div class="nu-cell-sub nu-mono">
+                                            @listing.SellerEmail
+                                        </div>
+                                        <div class="nu-cell-sub nu-mono" style="font-size: 0.68rem; color: #94a3b8;">
+                                            UID: @listing.SellerUid
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="nu-amount" style="font-size: 0.98rem;">
+                                            Start: ₱@listing.StartingPrice.ToString("N2")
+                                        </div>
+                                        <div class="nu-cell-sub" style="font-weight: 600; color: var(--nu-text-body);">
+                                            Reserve: ₱@listing.ReservePrice.ToString("N2")
+                                        </div>
+                                        <div style="margin-top: 4px;">
+                                            @if (listing.PaidPackage == "Priority Pin" || listing.IsPinned)
+                                            {
+                                                <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Priority Pin (₱20)</span>
+                                            }
+                                            else if (listing.PaidPackage == "Standard Post")
+                                            {
+                                                <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Standard Paid (₱10)</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge-pill" style="background: rgba(100, 116, 139, 0.12); color: #475569; font-size: 0.65rem;">Free First Post</span>
+                                            }
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div style="font-size: 0.82rem; font-weight: 600; color: var(--nu-navy-primary);">
+                                            @(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "—")
+                                        </div>
+                                        <div class="nu-cell-sub">
+                                            @(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("hh:mm tt") : "")
+                                        </div>
+                                    </td>
+                                    <td style="text-align: right;">
+                                        <div class="listing-actions">
+                                            <button type="button"
+                                                    class="btn-nu-success"
+                                                    style="font-size: 0.76rem; padding: 0.45rem 0.8rem; background: #10B981; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer;"
+                                                    @onclick="() => ApproveListing(listing)">
+                                                ✓ Approve
+                                            </button>
+                                            <button type="button"
+                                                    class="btn-nu-danger"
+                                                    style="font-size: 0.76rem; padding: 0.45rem 0.8rem; font-weight: 700;"
+                                                    @onclick="() => PromptReject(listing)">
+                                                ✕ Reject
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="6" class="nu-empty-state" style="padding: 3rem 1.5rem;">
+                                    <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🎉</div>
+                                    <div style="font-weight: 700; font-size: 1rem; color: var(--nu-navy-primary);">All listing submissions are up to date!</div>
+                                    <div style="font-size: 0.82rem; color: var(--nu-text-muted); margin-top: 4px;">No pending listing approvals match your query.</div>
                                 </td>
                             </tr>
                         }
-                    }
-                    else
-                    {
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <!-- ACTIVE MARKETPLACE FEED -->
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
                         <tr>
-                            <td colspan="8" class="nu-empty-state">
-                                No active marketplace listings match your query.
-                            </td>
+                            <th>Listing Item</th>
+                            <th>Category</th>
+                            <th>Seller Info</th>
+                            <th>Highest Bid (₱)</th>
+                            <th>Reserve Price</th>
+                            <th>Auction Countdown</th>
+                            <th>Package Status</th>
+                            <th style="text-align: right;">Moderation Override</th>
                         </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
+                    </thead>
+                    <tbody>
+                        @if (FilteredActiveListings.Any())
+                        {
+                            @foreach (var listing in FilteredActiveListings)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="listing-item-cell">
+                                            <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
+                                                 alt="@listing.Title"
+                                                 class="listing-thumb" />
+                                            <div style="max-width: 220px; min-width: 0;">
+                                                <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.88rem; line-height: 1.3;">
+                                                    @listing.Title
+                                                </div>
+                                                <div class="nu-cell-sub nu-mono">
+                                                    ID: @listing.Id · @listing.TotalBids bids
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <span class="badge-pill badge-pill-navy" style="font-size: 0.72rem;">
+                                            @listing.Category
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <div class="nu-cell-primary" style="font-size: 0.82rem;">
+                                            @listing.SellerName
+                                        </div>
+                                        <div class="nu-cell-sub nu-mono">
+                                            @listing.SellerUid
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="nu-amount" style="font-size: 1.05rem;">
+                                            ₱@listing.CurrentHighestBid.ToString("N2")
+                                        </div>
+                                        <div class="nu-cell-sub" style="color: var(--nu-success); font-weight: 600;">
+                                            Start: ₱@listing.StartingPrice.ToString("N2")
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div style="font-weight: 600; color: var(--nu-text-body); font-size: 0.88rem;">
+                                            ₱@listing.ReservePrice.ToString("N2")
+                                        </div>
+                                        @if (listing.CurrentHighestBid >= listing.ReservePrice)
+                                        {
+                                            <span class="badge-pill badge-pill-success" style="font-size: 0.65rem;">Met</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="badge-pill badge-pill-warning" style="font-size: 0.65rem;">Unmet</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <div style="font-weight: 700; font-size: 0.84rem; color: @(listing.RemainingTime.TotalHours < 3 ? "var(--nu-danger)" : "var(--nu-navy-primary)");">
+                                            @FormatTimeSpan(listing.RemainingTime)
+                                        </div>
+                                        <div class="nu-cell-sub">
+                                            Ends @(listing.AuctionEndsAt.HasValue ? listing.AuctionEndsAt.Value.ToLocalTime().ToString("MMM dd, hh:mm tt") : "TBD")
+                                        </div>
+                                    </td>
+                                    <td>
+                                        @if (listing.IsPinned)
+                                        {
+                                            <span class="badge-pill badge-pill-gold">Pinned (₱20)</span>
+                                        }
+                                        else
+                                        {
+                                            <span style="font-size: 0.78rem; color: var(--nu-text-muted);">Standard</span>
+                                        }
+                                    </td>
+                                    <td style="text-align: right;">
+                                        <div class="listing-actions">
+                                            <button type="button"
+                                                    class="btn-nu-danger"
+                                                    style="font-size: 0.74rem; padding: 0.4rem 0.7rem;"
+                                                    @onclick="() => PromptUnpublish(listing)">
+                                                Unpublish
+                                            </button>
+                                            <button type="button"
+                                                    class="btn-nu-outline"
+                                                    style="font-size: 0.74rem; padding: 0.4rem 0.6rem;"
+                                                    title="Toggle Pin for testing"
+                                                    @onclick="() => TogglePin(listing)">
+                                                @(listing.IsPinned ? "Unpin" : "Pin")
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="8" class="nu-empty-state">
+                                    No active marketplace listings match your query.
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
     </div>
 </div>
 
+<!-- REJECTION REASON MODAL -->
+@if (_selectedListingToReject != null)
+{
+    <div class="nu-modal-backdrop" @onclick="() => _selectedListingToReject = null">
+        <div class="nu-modal-card" style="max-width: 520px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header" style="background: var(--nu-danger-bg);">
+                <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-danger); margin: 0;">
+                    Reject Marketplace Listing Submission
+                </h3>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="() => _selectedListingToReject = null">✕</button>
+            </div>
+
+            <div class="nu-modal-body">
+                <p style="font-size: 0.9rem; color: var(--nu-text-body); margin: 0 0 0.8rem;">
+                    You are rejecting <strong>"@_selectedListingToReject.Title"</strong> submitted by <strong>@_selectedListingToReject.SellerName</strong>.
+                </p>
+
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--nu-navy-primary); margin-bottom: 0.35rem;">
+                        Rejection Reason (Optional - Max 500 chars):
+                    </label>
+                    <textarea class="nu-input"
+                              rows="4"
+                              placeholder="Specify why this listing was not approved (e.g. Prohibited item, blurred image, misleading title)..."
+                              maxlength="500"
+                              @bind="_rejectionReason">
+                    </textarea>
+                    <div style="font-size: 0.72rem; color: var(--nu-text-muted); text-align: right; margin-top: 4px;">
+                        @(_rejectionReason?.Length ?? 0) / 500 characters
+                    </div>
+                </div>
+
+                <div class="nu-callout">
+                    This will transition the listing status to <code class="nu-mono" style="font-weight: 700; color: var(--nu-danger);">rejected</code> and notify the student seller via in-app notification.
+                </div>
+            </div>
+
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="() => _selectedListingToReject = null">
+                    Cancel
+                </button>
+                <button type="button" class="btn-nu-danger" style="background: var(--nu-danger); color: white; border-color: var(--nu-danger);" @onclick="ConfirmReject">
+                    Confirm Rejection
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- UNPUBLISH MODAL -->
 @if (_selectedListingToUnpublish != null)
 {
     <div class="nu-modal-backdrop" @onclick="() => _selectedListingToUnpublish = null">
@@ -204,10 +414,22 @@
 }
 
 @code {
+    private string _activeTab = "pending"; // "pending" or "active"
     private string _searchKeyword = string.Empty;
     private MarketplaceListing? _selectedListingToUnpublish;
+    private MarketplaceListing? _selectedListingToReject;
+    private string _rejectionReason = string.Empty;
 
-    private IEnumerable<MarketplaceListing> FilteredListings =>
+    private IEnumerable<MarketplaceListing> FilteredPendingListings =>
+        string.IsNullOrWhiteSpace(_searchKeyword)
+            ? FirestoreService.PendingApprovalListings
+            : FirestoreService.PendingApprovalListings.Where(l =>
+                l.Title.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
+                l.Category.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
+                l.SellerName.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
+                l.SellerUid.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<MarketplaceListing> FilteredActiveListings =>
         string.IsNullOrWhiteSpace(_searchKeyword)
             ? FirestoreService.ActiveListings
             : FirestoreService.ActiveListings.Where(l =>
@@ -231,6 +453,7 @@
         }
 
         FirestoreService.OnListingsUpdated += HandleUpdate;
+        FirestoreService.OnPendingListingsUpdated += HandleUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }
 
@@ -244,6 +467,25 @@
         if (ts <= TimeSpan.Zero) return "Expired";
         if (ts.TotalHours >= 24) return $"{(int)ts.TotalDays}d {ts.Hours}h left";
         return $"{ts.Hours}h {ts.Minutes}m left";
+    }
+
+    private async Task ApproveListing(MarketplaceListing listing)
+    {
+        await FirestoreService.ApproveListingAsync(listing.Id);
+    }
+
+    private void PromptReject(MarketplaceListing listing)
+    {
+        _selectedListingToReject = listing;
+        _rejectionReason = string.Empty;
+    }
+
+    private async Task ConfirmReject()
+    {
+        if (_selectedListingToReject == null) return;
+        await FirestoreService.RejectListingAsync(_selectedListingToReject.Id, _rejectionReason);
+        _selectedListingToReject = null;
+        _rejectionReason = string.Empty;
     }
 
     private void PromptUnpublish(MarketplaceListing listing)
@@ -268,5 +510,6 @@
     public void Dispose()
     {
         FirestoreService.OnListingsUpdated -= HandleUpdate;
+        FirestoreService.OnPendingListingsUpdated -= HandleUpdate;
     }
 }
