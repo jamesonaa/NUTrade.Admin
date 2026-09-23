@@ -1,11 +1,1 @@
 /* Scoped layout styles kept minimal; global admin theme lives in nutrade.css */
-
-.page {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-}
-
-main {
-    flex: 1;
-}

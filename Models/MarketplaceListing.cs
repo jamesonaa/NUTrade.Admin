@@ -64,8 +64,14 @@ public class MarketplaceListing
     [JsonPropertyName("isPinned")]
     public bool IsPinned { get; set; }
 
+    [JsonPropertyName("photos")]
+    public List<string>? Photos { get; set; }
+
     [JsonPropertyName("imageUrl")]
-    public string ImageUrl { get; set; } = string.Empty;
+    public string? LegacyImageUrl { get; set; }
+
+    [JsonIgnore]
+    public string ImageUrl => Photos != null && Photos.Any() ? Photos.First() : (LegacyImageUrl ?? string.Empty);
 
     [JsonPropertyName("totalBids")]
     public int TotalBids { get; set; }

@@ -110,7 +110,10 @@
                                         <div class="listing-item-cell">
                                             <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
                                                  alt="@listing.Title"
-                                                 class="listing-thumb" />
+                                                 class="listing-thumb"
+                                                 loading="lazy"
+                                                 style="cursor: zoom-in;"
+                                                 @onclick="() => PromptViewImage(listing)" />
                                             <div style="max-width: 260px; min-width: 0;">
                                                 <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.9rem; line-height: 1.3;">
                                                     @listing.Title
@@ -233,7 +236,10 @@
                                         <div class="listing-item-cell">
                                             <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
                                                  alt="@listing.Title"
-                                                 class="listing-thumb" />
+                                                 class="listing-thumb"
+                                                 loading="lazy"
+                                                 style="cursor: zoom-in;"
+                                                 @onclick="() => PromptViewImage(listing)" />
                                             <div style="max-width: 220px; min-width: 0;">
                                                 <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.88rem; line-height: 1.3;">
                                                     @listing.Title
@@ -413,11 +419,55 @@
     </div>
 }
 
+<!-- IMAGE VIEW MODAL -->
+@if (_selectedImageToView != null)
+{
+    <div class="nu-modal-backdrop" @onclick="() => _selectedImageToView = null">
+        <div class="nu-modal-card" style="max-width: 800px; padding: 1rem;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header" style="border-bottom: none; padding-bottom: 0;">
+                <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0;">
+                    Image Validation: @_selectedImageToView.Title
+                </h3>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem; border: none; font-size: 1.2rem;" @onclick="() => _selectedImageToView = null">✕</button>
+            </div>
+            <div class="nu-modal-body" style="text-align: center; padding: 1rem 0; overflow-y: auto; max-height: 75vh;">
+                @if (_selectedImageToView.Photos != null && _selectedImageToView.Photos.Any())
+                {
+                    <div style="display: flex; flex-direction: column; gap: 1rem; align-items: center;">
+                        @foreach (var photoUrl in _selectedImageToView.Photos)
+                        {
+                            <img src="@photoUrl" 
+                                 alt="@_selectedImageToView.Title" 
+                                 loading="lazy"
+                                 style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" />
+                        }
+                    </div>
+                }
+                else if (!string.IsNullOrWhiteSpace(_selectedImageToView.LegacyImageUrl))
+                {
+                    <img src="@_selectedImageToView.LegacyImageUrl" 
+                         alt="@_selectedImageToView.Title" 
+                         loading="lazy"
+                         style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" />
+                }
+                else
+                {
+                    <img src="https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800" 
+                         alt="Placeholder" 
+                         loading="lazy"
+                         style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" />
+                }
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private string _activeTab = "pending"; // "pending" or "active"
     private string _searchKeyword = string.Empty;
     private MarketplaceListing? _selectedListingToUnpublish;
     private MarketplaceListing? _selectedListingToReject;
+    private MarketplaceListing? _selectedImageToView;
     private string _rejectionReason = string.Empty;
 
     private IEnumerable<MarketplaceListing> FilteredPendingListings =>
@@ -467,6 +517,11 @@
         if (ts <= TimeSpan.Zero) return "Expired";
         if (ts.TotalHours >= 24) return $"{(int)ts.TotalDays}d {ts.Hours}h left";
         return $"{ts.Hours}h {ts.Minutes}m left";
+    }
+
+    private void PromptViewImage(MarketplaceListing listing)
+    {
+        _selectedImageToView = listing;
     }
 
     private async Task ApproveListing(MarketplaceListing listing)
