@@ -212,7 +212,6 @@
                                 </td>
                                 <td>
                                     <div class="nu-cell-primary">@tx.UserEmail</div>
-                                    <div class="nu-cell-sub">UID: @tx.UserId</div>
                                 </td>
                                 <td>
                                     <span class="badge-pill badge-pill-navy nu-mono" style="font-size: 0.72rem;">
@@ -285,12 +284,7 @@
                 </div>
                 <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="CloseBidInspector">✕</button>
             </div>
-
             <div class="nu-modal-body">
-                <div class="nu-callout" style="margin-bottom: 1rem;">
-                    Querying subcollection path: <code class="nu-mono" style="font-weight: 700; color: var(--nu-navy-primary);">listings/@_selectedListingId/bids</code>
-                </div>
-
                 @if (_isLoadingBids)
                 {
                     <div class="nu-empty-state">
@@ -363,6 +357,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await AuthService.InitializeAsync();
+
         // Enforce RBAC & 2FA Security Verification in page lifecycle
         if (!AuthService.IsAuthenticated)
         {

@@ -22,6 +22,16 @@
         <div class="login-notice-body">Admin privileges and verified institutional credentials required.</div>
     </div>
 
+    @if (_isInactivityLogout)
+    {
+        <div class="login-notice" style="background: #FFFBEB; border-left: 3px solid var(--nu-gold-primary); margin-bottom: 1.25rem; padding: 0.85rem 1rem;">
+            <div class="login-notice-title" style="color: var(--nu-gold-dark); font-weight: 800; font-size: 0.78rem;">SESSION TIMEOUT</div>
+            <div class="login-notice-body" style="color: #78350F; margin-top: 0.35rem; font-size: 0.82rem; line-height: 1.45;">
+                You were automatically signed out after 5 minutes of inactivity for security. Please sign in again to continue.
+            </div>
+        </div>
+    }
+
     @if (_isEmailUnverified)
     {
         <div class="login-notice" style="background: #FFFBEB; border-left: 3px solid var(--nu-gold-primary); margin-bottom: 1.25rem; padding: 0.85rem 1rem;">
@@ -133,12 +143,20 @@
     private bool _isProcessing = false;
     private bool _isResending = false;
     private bool _isEmailUnverified = false;
+    private bool _isInactivityLogout = false;
     private string? _unverifiedEmail;
     private string? _authErrorMessage;
 
     protected override async Task OnInitializedAsync()
     {
         await AuthService.InitializeAsync();
+
+        if (NavigationManager.Uri.Contains("reason=inactivity", StringComparison.OrdinalIgnoreCase))
+        {
+            _isInactivityLogout = true;
+            await AuthService.SignOutAsync();
+            return;
+        }
 
         if (AuthService.IsSecurityVerified)
         {

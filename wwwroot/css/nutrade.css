@@ -236,6 +236,23 @@ h1, h2, h3, h4, h5, h6, .nu-brand-font {
   flex-shrink: 0;
 }
 
+.nu-sidebar-avatar-badge {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(212, 160, 23, 0.25), rgba(27, 54, 93, 0.8));
+  border: 1.5px solid var(--nu-gold-primary);
+  color: var(--nu-gold-primary);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 800;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
 .nu-sidebar-user-name {
   font-family: 'Outfit', sans-serif;
   font-weight: 700;

@@ -1,27 +1,45 @@
 rules_version = '2';
+
+// NUTrade - Firestore Security Rules (proposed)
+// Project: nutrade-a25c7  -- SHARED by the Blazor WASM admin console (web)
+// and the student mobile app. Both use the Firebase *client* SDK, so both are
+// subject to these rules. Cloud Functions use the Admin SDK and BYPASS rules.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ---------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------
     function isAuthenticated() {
       return request.auth != null;
     }
 
+    // Claim-first: a custom claim costs 0 reads and short-circuits the get()s.
+    // The Firestore fallbacks mirror verifyAdminCaller() in functions/index.js
+    // so web, app and functions all agree on who is an admin.
     function isAdmin() {
-      return isAuthenticated() &&
-        (request.auth.token.role == 'admin' ||
-         request.auth.token.admin == true ||
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      return isAuthenticated() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
     }
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Helper: checks if client request attempts to modify restricted sensitive fields
-    function modifiesSensitiveFields() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasAny([
+    function affected() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // Listing fields only moderation / payment (admin or Admin SDK) may set.
+    function modifiesListingSensitiveFields() {
+      return affected().hasAny([
+        'sellerUid',
         'status',
+        'isVisible',
         'approvedAt',
         'approvedBy',
         'rejectedAt',
@@ -33,53 +51,132 @@ service cloud.firestore {
       ]);
     }
 
-    // LISTINGS COLLECTION
+    // User fields only an admin may set. Without this, any app user could
+    // write role:'admin' to their own doc and become an admin.
+    function modifiesUserPrivilegedFields() {
+      return affected().hasAny([
+        'role',
+        'verificationStatus',
+        'verifiedAt',
+        'rejectionReason',
+        'canPost',
+        'canBid',
+        'canChat',
+        'isSuspended',
+        'isBanned'
+      ]);
+    }
+
+    // ---------------------------------------------------------------
+    // LISTINGS
+    // ---------------------------------------------------------------
     match /listings/{listingId} {
-      // Anyone can read active or non-draft listings; admins can read all
-      allow read: if true;
+      // Authenticated read only: closes anonymous enumeration of drafts,
+      // rejected listings, rejection reasons and seller UIDs.
+      // Unfiltered collection listens still work (admin console relies on one).
+      // Stricter variant, if the app filters server-side with
+      // .where('status','==','active'):
+      //   allow read: if isAdmin()
+      //     || (isAuthenticated() && resource.data.status == 'active')
+      //     || isOwner(resource.data.sellerUid);
+      allow read: if isAuthenticated();
 
-      // Student listing creation
-      allow create: if isAuthenticated() &&
-        request.resource.data.sellerUid == request.auth.uid &&
-        (request.resource.data.status == 'pending_approval' ||
-         request.resource.data.status == 'pending_payment' ||
-         request.resource.data.status == 'draft');
+      // App-side creation: seller is pinned to the caller and cannot
+      // self-publish or pre-set moderation / payment fields.
+      allow create: if isAuthenticated()
+        && request.resource.data.sellerUid == request.auth.uid
+        && request.resource.data.status in ['pending_approval', 'pending_payment', 'draft']
+        && !request.resource.data.keys().hasAny([
+             'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy', 'paidPackage'
+           ]);
 
-      // Student listing updates: cannot modify protected status or approval fields
-      allow update: if (isOwner(resource.data.sellerUid) && !modifiesSensitiveFields()) || isAdmin();
+      // Owner may edit their own listing's own content; moderation belongs to
+      // admins (web console writes these directly) and to Cloud Functions.
+      allow update: if isAdmin()
+        || (isOwner(resource.data.sellerUid) && !modifiesListingSensitiveFields());
 
-      // Deletion: owner or admin
-      allow delete: if isOwner(resource.data.sellerUid) || isAdmin();
+      allow delete: if isAdmin() || isOwner(resource.data.sellerUid);
 
-      // Sub-collections (e.g. bids)
+      // BIDS -- append-only audit trail. Immutable once placed.
       match /bids/{bidId} {
-        allow read: if true;
-        allow create: if isAuthenticated() && request.resource.data.bidderUid == request.auth.uid;
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated()
+          && request.resource.data.bidderUid == request.auth.uid
+          && get(/databases/$(database)/documents/listings/$(listingId)).data.status == 'active';
+        allow update: if isAdmin();
+        allow delete: if isAdmin();
       }
     }
 
-    // USERS COLLECTION
+    // ---------------------------------------------------------------
+    // USERS
+    // ---------------------------------------------------------------
     match /users/{userId} {
+      // Admin console listens to the whole collection; students only need
+      // their own profile. Tighten to this once the app stops reading
+      // other users' docs directly:
+      //   allow read: if isAdmin() || isOwner(userId);
       allow read: if isAuthenticated();
-      allow create: if isOwner(userId);
-      allow update: if isOwner(userId) || isAdmin();
+
+      allow create: if isOwner(userId)
+        && request.resource.data.role == 'student'
+        && request.resource.data.verificationStatus == 'pending';
+
+      // Self-service profile edits, minus anything that grants privileges.
+      allow update: if isAdmin()
+        || (isOwner(userId) && !modifiesUserPrivilegedFields());
+
+      // Account removal is an admin/back-office action only.
+      allow delete: if isAdmin();
     }
 
-    // TRANSACTIONS LEDGER
+    // Admin whitelist. Read/written only by the Admin SDK in Cloud Functions;
+    // no client may enumerate or grant admin rights.
+    match /admins/{uid} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // MONEY -- server-authored only (createQrPayment / paymongoWebhook)
+    // ---------------------------------------------------------------
+    match /payments/{paymentId} {
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
     match /transactions/{transactionId} {
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow write: if isAdmin();
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow write: if false;
     }
 
-    // ADMIN SECURITY CODES (2FA)
-    match /admin_security_codes/{codeId} {
-      allow read, write: if isAdmin();
-    }
-
+    // ---------------------------------------------------------------
     // NOTIFICATIONS
+    // ---------------------------------------------------------------
     match /notifications/{notificationId} {
-      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
-      allow write: if isAdmin();
+      allow read: if isAdmin()
+        || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if isAdmin();
+      // Recipient may only flip the read flag.
+      allow update: if isAdmin()
+        || (isOwner(resource.data.userId) && affected().hasOnly(['isRead', 'readAt']));
+      allow delete: if isAdmin() || isOwner(resource.data.userId);
     }
+
+    // ---------------------------------------------------------------
+    // ADMIN 2FA CODES -- one admin must not be able to read another's code.
+    // NOTE: written during admin sign-in, so isAdmin() must already resolve
+    // at that point (custom claim, admins/{uid} doc, or users/{uid}.role).
+    // ---------------------------------------------------------------
+    match /admin_security_codes/{codeId} {
+      allow read, write: if isAdmin() && request.auth.uid == codeId;
+    }
+
+    // Everything not matched above is denied by default -- including
+    // products/, items/, posts/, marketplace/ (previously world-writable)
+    // and any chat collection the app may use. Add an explicit,
+    // owner-scoped block before relying on those from the app.
   }
 }

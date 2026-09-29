@@ -9,37 +9,18 @@
 
 <div style="display: flex; flex-direction: column; gap: 1.25rem;">
 
-    <div class="vu-page-header">
-        <div class="vu-title-block">
-            <div class="vu-title-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--nu-gold-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect width="20" height="16" x="2" y="4" rx="2"/>
-                    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
-                </svg>
-            </div>
+    <div style="background: #EFF6FF; border: 1px solid #BFDBFE; border-left: 4px solid var(--nu-navy-primary); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem;">
+        <div style="display: flex; align-items: flex-start; gap: 0.75rem;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--nu-navy-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
             <div>
-                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
-                    <span class="badge-pill badge-pill-gold">Module A</span>
-                </div>
-                <h1 style="font-size: 1.35rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0 0 0.25rem;">
-                    Email Verification Queue
-                </h1>
-                <p style="font-size: 0.85rem; color: var(--nu-text-muted); margin: 0; max-width: 520px; line-height: 1.45;">
-                    Review pending personal emails (not NU institutional). Approvals unlock posting, bidding, and chatting on the mobile app.
+                <h4 style="margin: 0 0 0.35rem; color: var(--nu-navy-primary); font-weight: 700; font-size: 0.98rem;">Automated OTP Verification Active</h4>
+                <p style="margin: 0; color: #1E3A8A; font-size: 0.85rem; line-height: 1.5;">
+                    Manual admin approval for new student accounts is disabled. Student registration is now fully automated via OTP verification in the mobile app. You can inspect registered users in <a href="admin/users" style="color: var(--nu-navy-primary); font-weight: 700; text-decoration: underline;">Users Management</a>.
                 </p>
-            </div>
-        </div>
-
-        <div class="vu-stats">
-            <div class="vu-stat-chip">
-                <span class="pulse-dot" style="background-color: var(--nu-warning);"></span>
-                <span><strong>@FirestoreService.PendingVerifications.Count</strong> pending</span>
-            </div>
-            <div class="vu-stat-chip">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>
-                </svg>
-                <span>Latest → oldest</span>
             </div>
         </div>
     </div>
@@ -221,6 +202,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await AuthService.InitializeAsync();
+
         if (!AuthService.IsAuthenticated)
         {
             NavigationManager.NavigateTo("login");

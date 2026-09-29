@@ -136,14 +136,21 @@
                                         </span>
                                     </td>
                                     <td>
-                                        <div class="nu-cell-primary" style="font-size: 0.82rem;">
-                                            @listing.SellerName
-                                        </div>
-                                        <div class="nu-cell-sub nu-mono">
-                                            @listing.SellerEmail
-                                        </div>
-                                        <div class="nu-cell-sub nu-mono" style="font-size: 0.68rem; color: #94a3b8;">
-                                            UID: @listing.SellerUid
+                                        @{
+                                            var profile = GetSellerProfile(listing.SellerUid);
+                                            var sellerDisplayName = GetDisplayName(profile, listing);
+                                            var sellerProgram = profile != null ? profile.FormattedProgram : "School of Program";
+                                        }
+                                        <div style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: rgba(0, 43, 91, 0.03); border: 1px solid rgba(0, 43, 91, 0.08); transition: all 0.2s ease-in-out;"
+                                             title="Click to view full seller profile"
+                                             @onclick="() => PromptViewSeller(listing.SellerUid, sellerDisplayName, profile, listing.SellerEmail)">
+                                            <div class="nu-cell-primary" style="font-size: 0.84rem; font-weight: 700; color: var(--nu-navy-primary); display: flex; align-items: center; justify-content: space-between; gap: 4px;">
+                                                <div style="display:flex;align-items:center;gap:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>@sellerDisplayName</span></div>
+                                                <span style="font-size: 0.72rem; color: var(--nu-gold-primary); background: rgba(212, 160, 23, 0.15); padding: 1px 5px; border-radius: 4px;">Info</span>
+                                            </div>
+                                            <div class="nu-cell-sub nu-mono" style="font-size: 0.76rem; color: #475569; margin-top: 2px;">
+                                                @sellerProgram
+                                            </div>
                                         </div>
                                     </td>
                                     <td>
@@ -153,19 +160,44 @@
                                         <div class="nu-cell-sub" style="font-weight: 600; color: var(--nu-text-body);">
                                             Reserve: ₱@listing.ReservePrice.ToString("N2")
                                         </div>
-                                        <div style="margin-top: 4px;">
-                                            @if (listing.PaidPackage == "Priority Pin" || listing.IsPinned)
+                                        <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 3px;">
+                                            @* Payment state comes from the listing's real paymentStatus / paidAt
+                                               (written by paymongoWebhook) or a matching /payments record.
+                                               Never inferred from the package name or amount. *@
+                                            @if (listing.PaymentLabel == "Paid")
                                             {
-                                                <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Priority Pin (₱20)</span>
+                                                <span class="badge-pill badge-pill-success" style="font-size: 0.72rem; font-weight: 800; padding: 0.25rem 0.55rem; display: inline-flex; align-items: center; gap: 4px; background: #10B981; color: white;">
+                                                    <span>✓</span> PAID@(listing.PaidPackage != "Free" ? $" · {listing.PaidPackage}" : "")
+                                                </span>
+                                                @if (!string.IsNullOrWhiteSpace(listing.PayMongoIntentId))
+                                                {
+                                                    <div class="nu-cell-sub nu-mono" style="font-size: 0.65rem; color: #64748B;">
+                                                        Ref: @listing.PayMongoIntentId
+                                                    </div>
+                                                }
                                             }
-                                            else if (listing.PaidPackage == "Standard Post")
+                                            else if (listing.PaymentLabel == "Unpaid")
                                             {
-                                                <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Standard Paid (₱10)</span>
+                                                <span class="badge-pill" style="background: #DC2626; color: white; font-size: 0.72rem; font-weight: 800; padding: 0.25rem 0.55rem; display: inline-flex; align-items: center; gap: 4px;">
+                                                    <span>✕</span> UNPAID@(listing.PaidPackage != "Free" ? $" · {listing.PaidPackage}" : "")
+                                                </span>
+                                                <div class="nu-cell-sub nu-mono" style="font-size: 0.65rem; color: #B91C1C;">
+                                                    Fee not settled — approval blocked
+                                                </div>
                                             }
                                             else
                                             {
-                                                <span class="badge-pill" style="background: rgba(100, 116, 139, 0.12); color: #475569; font-size: 0.65rem;">Free First Post</span>
+                                                <span class="badge-pill" style="background: rgba(100, 116, 139, 0.12); color: #475569; font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; display: inline-flex; align-items: center; gap: 4px;">
+                                                    Free Post (₱0) — no payment required
+                                                </span>
                                             }
+                                            <div class="nu-cell-sub nu-mono" style="font-size: 0.65rem; color: #64748B;">
+                                                Status: @listing.Status
+                                                @if (!string.IsNullOrWhiteSpace(listing.PaymentStatus))
+                                                {
+                                                    <text> · paymentStatus: @listing.PaymentStatus</text>
+                                                }
+                                            </div>
                                         </div>
                                     </td>
                                     <td>
@@ -178,11 +210,27 @@
                                     </td>
                                     <td style="text-align: right;">
                                         <div class="listing-actions">
+                                            @* Approval is gated on the real payment state: an Unpaid
+                                               required fee (or a non-approvable status such as draft)
+                                               disables the button. *@
+                                            @{
+                                                bool isProcessing = _processingListingId == listing.Id;
+                                                bool canClick = listing.CanApprove && !isProcessing;
+                                            }
                                             <button type="button"
                                                     class="btn-nu-success"
-                                                    style="font-size: 0.76rem; padding: 0.45rem 0.8rem; background: #10B981; color: white; border: none; border-radius: 6px; font-weight: 700; cursor: pointer;"
+                                                    disabled="@(!canClick)"
+                                                    title="@(listing.CanApprove ? (isProcessing ? "Approving, please wait..." : "Approve this listing") : listing.ApproveBlockedReason)"
+                                                    style="@($"font-size: 0.76rem; padding: 0.45rem 0.8rem; border: none; border-radius: 6px; font-weight: 700; color: white; background: {(canClick ? "#10B981" : "#94A3B8")}; cursor: {(canClick ? "pointer" : "not-allowed")}; opacity: {(canClick ? "1" : "0.65")}; transition: all 0.2s ease;")"
                                                     @onclick="() => ApproveListing(listing)">
-                                                ✓ Approve
+                                                @if (isProcessing)
+                                                {
+                                                    <span>Approving...</span>
+                                                }
+                                                else
+                                                {
+                                                    <span>Approve</span>
+                                                }
                                             </button>
                                             <button type="button"
                                                     class="btn-nu-danger"
@@ -199,7 +247,6 @@
                         {
                             <tr>
                                 <td colspan="6" class="nu-empty-state" style="padding: 3rem 1.5rem;">
-                                    <div style="font-size: 1.5rem; margin-bottom: 0.5rem;">🎉</div>
                                     <div style="font-weight: 700; font-size: 1rem; color: var(--nu-navy-primary);">All listing submissions are up to date!</div>
                                     <div style="font-size: 0.82rem; color: var(--nu-text-muted); margin-top: 4px;">No pending listing approvals match your query.</div>
                                 </td>
@@ -256,11 +303,21 @@
                                         </span>
                                     </td>
                                     <td>
-                                        <div class="nu-cell-primary" style="font-size: 0.82rem;">
-                                            @listing.SellerName
-                                        </div>
-                                        <div class="nu-cell-sub nu-mono">
-                                            @listing.SellerUid
+                                        @{
+                                            var profile = GetSellerProfile(listing.SellerUid);
+                                            var sellerDisplayName = GetDisplayName(profile, listing);
+                                            var sellerProgram = profile != null ? profile.FormattedProgram : "School of Program";
+                                        }
+                                        <div style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: rgba(0, 43, 91, 0.03); border: 1px solid rgba(0, 43, 91, 0.08); transition: all 0.2s ease-in-out;"
+                                             title="Click to view full seller profile"
+                                             @onclick="() => PromptViewSeller(listing.SellerUid, sellerDisplayName, profile, listing.SellerEmail)">
+                                            <div class="nu-cell-primary" style="font-size: 0.84rem; font-weight: 700; color: var(--nu-navy-primary); display: flex; align-items: justify-content: space-between; gap: 4px;">
+                                                <div style="display:flex;align-items:center;gap:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>@sellerDisplayName</span></div>
+                                                <span style="font-size: 0.72rem; color: var(--nu-gold-primary); background: rgba(212, 160, 23, 0.15); padding: 1px 5px; border-radius: 4px;">Info</span>
+                                            </div>
+                                            <div class="nu-cell-sub nu-mono" style="font-size: 0.76rem; color: #475569; margin-top: 2px;">
+                                                @sellerProgram
+                                            </div>
                                         </div>
                                     </td>
                                     <td>
@@ -462,6 +519,105 @@
     </div>
 }
 
+<!-- SELLER DETAILS MODAL -->
+@if (!string.IsNullOrWhiteSpace(_selectedSellerUid) || _selectedSellerProfile != null)
+{
+    <div class="nu-modal-backdrop" @onclick="() => _selectedSellerUid = string.Empty">
+        <div class="nu-modal-card" style="max-width: 540px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header" style="background: var(--nu-navy-primary); color: white;">
+                <div style="display: flex; align-items: center; gap: 0.6rem;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>
+                    <div>
+                        <h3 style="font-size: 1.05rem; font-weight: 700; color: white; margin: 0;">
+                            Student Seller Profile
+                        </h3>
+                        <div style="font-size: 0.75rem; color: var(--nu-gold-primary);">
+                            NU Campus Verified Identity
+                        </div>
+                    </div>
+                </div>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem; color: white; border-color: rgba(255,255,255,0.3);" @onclick="() => CloseSellerModal()">✕</button>
+            </div>
+
+            <div class="nu-modal-body" style="padding: 1.25rem;">
+                <!-- Profile Avatar & Primary Info -->
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid var(--nu-border-color);">
+                    @if (_selectedSellerProfile != null && !string.IsNullOrWhiteSpace(_selectedSellerProfile.PhotoUrl))
+                    {
+                        <img src="@_selectedSellerProfile.PhotoUrl" alt="Seller Avatar" style="width: 56px; height: 56px; border-radius: 50%; object-fit: cover; border: 2px solid var(--nu-gold-primary);" />
+                    }
+                    else
+                    {
+                        <div style="width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, var(--nu-navy-primary), #1e3a8a); color: var(--nu-gold-primary); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; font-weight: 800; border: 2px solid var(--nu-gold-primary);">
+                            @(_selectedSellerDisplayName.Length > 0 ? _selectedSellerDisplayName[0].ToString().ToUpper() : "U")
+                        </div>
+                    }
+                    <div>
+                        <div style="font-size: 1.1rem; font-weight: 800; color: var(--nu-navy-primary);">
+                            @_selectedSellerDisplayName
+                        </div>
+                        <div style="font-size: 0.82rem; color: var(--nu-text-muted);">
+                            @(_selectedSellerProfile?.Email ?? (!string.IsNullOrWhiteSpace(_selectedSellerFallbackEmail) ? _selectedSellerFallbackEmail : "No email linked"))
+                        </div>
+                        <div style="margin-top: 4px;">
+                            @if (_selectedSellerProfile?.IsVerified == true || _selectedSellerProfile?.VerificationStatus == "verified")
+                            {
+                                <span class="badge-pill badge-pill-success" style="font-size: 0.7rem;">✓ Verified Student</span>
+                            }
+                            else if (_selectedSellerProfile?.VerificationStatus == "rejected")
+                            {
+                                <span class="badge-pill badge-pill-danger" style="font-size: 0.7rem;">✕ Verification Rejected</span>
+                            }
+                            else
+                            {
+                                <span class="badge-pill badge-pill-warning" style="font-size: 0.7rem;">⏳ Pending Verification</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Information Grid -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; font-size: 0.84rem;">
+                    <div style="background: #F8FAFC; padding: 0.75rem; border-radius: 8px; border: 1px solid #E2E8F0;">
+                        <div style="font-size: 0.72rem; color: var(--nu-text-muted); font-weight: 700; text-transform: uppercase;">Academic Program</div>
+                        <div style="font-weight: 700; color: var(--nu-navy-primary); margin-top: 2px;">
+                            @(_selectedSellerProfile != null ? _selectedSellerProfile.FormattedProgram : "School of Program")
+                        </div>
+                    </div>
+
+                    <div style="background: #F8FAFC; padding: 0.75rem; border-radius: 8px; border: 1px solid #E2E8F0;">
+                        <div style="font-size: 0.72rem; color: var(--nu-text-muted); font-weight: 700; text-transform: uppercase;">User Role</div>
+                        <div style="font-weight: 700; color: var(--nu-navy-primary); margin-top: 2px; text-transform: capitalize;">
+                            @(_selectedSellerProfile?.Role ?? "student")
+                        </div>
+                    </div>
+
+                    <div style="background: #F8FAFC; padding: 0.75rem; border-radius: 8px; border: 1px solid #E2E8F0; grid-column: span 2;">
+                        <div style="font-size: 0.72rem; color: var(--nu-text-muted); font-weight: 700; text-transform: uppercase; margin-bottom: 6px;">Trading Permissions</div>
+                        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                            <span class="badge-pill @(_selectedSellerProfile?.CanPost == true ? "badge-pill-success" : "badge-pill-warning")" style="font-size: 0.7rem;">
+                                Post: @(_selectedSellerProfile?.CanPost == true ? "Allowed" : "Disabled")
+                            </span>
+                            <span class="badge-pill @(_selectedSellerProfile?.CanBid == true ? "badge-pill-success" : "badge-pill-warning")" style="font-size: 0.7rem;">
+                                Bid: @(_selectedSellerProfile?.CanBid == true ? "Allowed" : "Disabled")
+                            </span>
+                            <span class="badge-pill @(_selectedSellerProfile?.CanChat == true ? "badge-pill-success" : "badge-pill-warning")" style="font-size: 0.7rem;">
+                                Chat: @(_selectedSellerProfile?.CanChat == true ? "Allowed" : "Disabled")
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="() => CloseSellerModal()">
+                    Close Profile
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private string _activeTab = "pending"; // "pending" or "active"
     private string _searchKeyword = string.Empty;
@@ -469,6 +625,54 @@
     private MarketplaceListing? _selectedListingToReject;
     private MarketplaceListing? _selectedImageToView;
     private string _rejectionReason = string.Empty;
+    private string _processingListingId = string.Empty; // tracks which listing is being processed
+
+    private UserProfile? _selectedSellerProfile;
+    private string _selectedSellerDisplayName = string.Empty;
+    private string _selectedSellerUid = string.Empty;
+    private string _selectedSellerFallbackEmail = string.Empty;
+
+    private UserProfile? GetSellerProfile(string uid)
+    {
+        if (string.IsNullOrWhiteSpace(uid)) return null;
+        return FirestoreService.AllUsers.FirstOrDefault(u => string.Equals(u.Uid, uid, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string GetDisplayName(UserProfile? profile, MarketplaceListing listing)
+    {
+        if (profile != null)
+        {
+            if (!string.IsNullOrWhiteSpace(profile.FirstName) || !string.IsNullOrWhiteSpace(profile.LastName))
+                return $"{profile.FirstName} {profile.LastName}".Trim();
+            if (!string.IsNullOrWhiteSpace(profile.DisplayName))
+                return profile.DisplayName;
+            if (!string.IsNullOrWhiteSpace(profile.Email))
+                return profile.Email.Split('@')[0];
+        }
+        if (!string.IsNullOrWhiteSpace(listing.SellerName))
+            return listing.SellerName;
+        if (!string.IsNullOrWhiteSpace(listing.SellerEmail))
+            return listing.SellerEmail.Split('@')[0];
+        if (!string.IsNullOrWhiteSpace(listing.SellerUid))
+            return $"Student ({listing.SellerUid.Substring(0, Math.Min(8, listing.SellerUid.Length))}...)";
+        return "Student Seller";
+    }
+
+    private void PromptViewSeller(string uid, string displayName, UserProfile? profile, string fallbackEmail = "")
+    {
+        _selectedSellerUid = uid;
+        _selectedSellerDisplayName = displayName;
+        _selectedSellerProfile = profile ?? GetSellerProfile(uid);
+        _selectedSellerFallbackEmail = fallbackEmail;
+    }
+
+    private void CloseSellerModal()
+    {
+        _selectedSellerUid = string.Empty;
+        _selectedSellerProfile = null;
+        _selectedSellerDisplayName = string.Empty;
+        _selectedSellerFallbackEmail = string.Empty;
+    }
 
     private IEnumerable<MarketplaceListing> FilteredPendingListings =>
         string.IsNullOrWhiteSpace(_searchKeyword)
@@ -490,6 +694,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await AuthService.InitializeAsync();
+
         if (!AuthService.IsAuthenticated)
         {
             NavigationManager.NavigateTo("login");
@@ -504,6 +710,7 @@
 
         FirestoreService.OnListingsUpdated += HandleUpdate;
         FirestoreService.OnPendingListingsUpdated += HandleUpdate;
+        FirestoreService.OnAllUsersUpdated += HandleUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }
 
@@ -526,7 +733,39 @@
 
     private async Task ApproveListing(MarketplaceListing listing)
     {
-        await FirestoreService.ApproveListingAsync(listing.Id);
+        // Enforce the payment gate here too - a disabled button is only a hint.
+        if (!listing.CanApprove)
+        {
+            ToastService.ShowError(listing.ApproveBlockedReason, "Approval Blocked");
+            return;
+        }
+
+        if (_processingListingId == listing.Id) return; // prevent double-click
+
+        _processingListingId = listing.Id;
+        StateHasChanged();
+
+        try
+        {
+            var success = await FirestoreService.ApproveListingAsync(listing.Id);
+            if (success)
+            {
+                ToastService.ShowSuccess(
+                    $"Listing \u201c{listing.Title}\u201d has been approved and is now live on the marketplace.",
+                    "Listing Approved");
+            }
+            else
+            {
+                ToastService.ShowError(
+                    "Approval failed. The Cloud Function rejected the request — ensure the admin account has the 'admin' custom claim set in Firebase. Check the browser console for details.",
+                    "Approval Failed");
+            }
+        }
+        finally
+        {
+            _processingListingId = string.Empty;
+            StateHasChanged();
+        }
     }
 
     private void PromptReject(MarketplaceListing listing)
@@ -538,9 +777,28 @@
     private async Task ConfirmReject()
     {
         if (_selectedListingToReject == null) return;
-        await FirestoreService.RejectListingAsync(_selectedListingToReject.Id, _rejectionReason);
-        _selectedListingToReject = null;
-        _rejectionReason = string.Empty;
+
+        var id = _selectedListingToReject.Id;
+        var title = _selectedListingToReject.Title;
+        _processingListingId = id;
+        StateHasChanged();
+
+        try
+        {
+            var success = await FirestoreService.RejectListingAsync(id, _rejectionReason);
+            _selectedListingToReject = null;
+            _rejectionReason = string.Empty;
+
+            if (success)
+                ToastService.ShowSuccess($"Listing \u201c{title}\u201d has been rejected and removed from the approval queue.", "Listing Rejected");
+            else
+                ToastService.ShowError("Rejection failed. Check the browser console for details.", "Rejection Failed");
+        }
+        finally
+        {
+            _processingListingId = string.Empty;
+            StateHasChanged();
+        }
     }
 
     private void PromptUnpublish(MarketplaceListing listing)
@@ -551,8 +809,27 @@
     private async Task ConfirmUnpublish()
     {
         if (_selectedListingToUnpublish == null) return;
-        await FirestoreService.UnpublishListingAsync(_selectedListingToUnpublish.Id);
-        _selectedListingToUnpublish = null;
+
+        var id = _selectedListingToUnpublish.Id;
+        var title = _selectedListingToUnpublish.Title;
+        _processingListingId = id;
+        StateHasChanged();
+
+        try
+        {
+            var success = await FirestoreService.UnpublishListingAsync(id);
+            _selectedListingToUnpublish = null;
+
+            if (success)
+                ToastService.ShowSuccess($"Listing \u201c{title}\u201d has been unpublished.", "Listing Unpublished");
+            else
+                ToastService.ShowError("Unpublish failed. The Firestore rules may not allow direct status writes. Check the browser console.", "Unpublish Failed");
+        }
+        finally
+        {
+            _processingListingId = string.Empty;
+            StateHasChanged();
+        }
     }
 
     private async Task TogglePin(MarketplaceListing listing)
@@ -566,5 +843,6 @@
     {
         FirestoreService.OnListingsUpdated -= HandleUpdate;
         FirestoreService.OnPendingListingsUpdated -= HandleUpdate;
+        FirestoreService.OnAllUsersUpdated -= HandleUpdate;
     }
 }

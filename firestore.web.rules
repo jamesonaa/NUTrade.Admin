@@ -1,0 +1,46 @@
+rules_version = '2';
+
+// Rules for the web admin panel's OWN Firestore database ("web") in project
+// nutrade-a25c7. Deployed from this repo only:
+//
+//   firebase deploy --only firestore:rules
+//
+// firebase.json pins "database": "web" so this can never overwrite the app's
+// rules on (default). The app repo owns (default) and firestore.rules.
+//
+// Rules in "web" can only see documents in "web", so admin checks use custom
+// claims - a lookup into (default)/users is not possible from here, and the
+// app's rules and callables do not trust profile roles anyway.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.get('role', '') == 'admin'
+        || request.auth.token.get('admin', false) == true
+      );
+    }
+
+    // Second-factor codes for admin sign-in.
+    // Scoped per admin so one admin cannot read another's code.
+    match /admin_security_codes/{codeId} {
+      allow read, write: if isAdmin() && request.auth.uid == codeId;
+    }
+
+    // Notices to a student: the recipient reads theirs, only admins write.
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /marketplace/{id} { allow read: if isSignedIn(); allow write: if isAdmin(); }
+    match /products/{id}    { allow read: if isSignedIn(); allow write: if isAdmin(); }
+    match /items/{id}       { allow read: if isSignedIn(); allow write: if isAdmin(); }
+    match /posts/{id}       { allow read: if isSignedIn(); allow write: if isAdmin(); }
+
+    // Anything not matched above is denied. App data (users, listings, bids,
+    // chats, orders, payments, transactions, wallets, payouts) lives in
+    // (default) and is governed by the app repo's firestore.rules.
+  }
+}

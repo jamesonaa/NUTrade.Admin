@@ -60,9 +60,17 @@ else
 @code {
     private bool _sidebarOpen;
 
-    private bool IsLoginPage => NavigationManager.Uri.EndsWith("/login", StringComparison.OrdinalIgnoreCase) ||
-                               NavigationManager.Uri.EndsWith("/security-verification", StringComparison.OrdinalIgnoreCase) ||
-                               NavigationManager.Uri.EndsWith("/", StringComparison.OrdinalIgnoreCase);
+    private bool IsLoginPage
+    {
+        get
+        {
+            var relative = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+            var path = relative.Split('?')[0].Trim('/');
+            return string.IsNullOrEmpty(path) ||
+                   path.Equals("login", StringComparison.OrdinalIgnoreCase) ||
+                   path.Equals("security-verification", StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
     protected override void OnInitialized()
     {

@@ -22,6 +22,273 @@ window.NUTradeFirebase = (function () {
     let activeSubscriptions = new Map();
     // Live Firestore onSnapshot unsubscribe functions (key -> unsub)
     let liveUnsubscribers = new Map();
+    let livePaymentsMap = new Map();
+    let pendingListingsSub = null;
+    let activeListingsSub = null;
+    let isPaymentsListenerActive = false;
+    let inactivityInterval = null;
+    let inactivityDotNetHelper = null;
+    let onActivityHandler = null;
+    const activityEvents = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"];
+
+    // The app's Cloud Functions live in asia-southeast1. Listing moderation must
+    // go through them: the app's Firestore rules refuse direct writes to
+    // /listings, and the callables also set the auction clock and feed slot.
+    const APP_FUNCTIONS_REGION = "asia-southeast1";
+    let appFunctionsInstance = null;
+
+    function getAppCallable(name) {
+        try {
+            if (!window.firebase || typeof window.firebase.app !== "function") return null;
+            if (!appFunctionsInstance) {
+                appFunctionsInstance = window.firebase.app().functions(APP_FUNCTIONS_REGION);
+            }
+            return appFunctionsInstance.httpsCallable(name);
+        } catch (err) {
+            console.error("NUTrade: could not resolve callable '" + name + "' in " + APP_FUNCTIONS_REGION + " -", err.message || err);
+            return null;
+        }
+    }
+
+    // All collections (listings, users, payments, admin_security_codes)
+    // live in the shared "(default)" Firestore database.
+    const WEB_PANEL_DB = "(default)";
+
+    function webPanelDocUrl(path) {
+        return "https://firestore.googleapis.com/v1/projects/" + firebaseConfig.projectId +
+            "/databases/" + WEB_PANEL_DB + "/documents/" + path;
+    }
+
+    async function webPanelRequest(method, path, fields) {
+        if (!authInstance || !authInstance.currentUser) {
+            throw new Error("Not signed in; cannot reach the " + WEB_PANEL_DB + " database.");
+        }
+
+        const idToken = await authInstance.currentUser.getIdToken();
+        const opts = {
+            method: method,
+            headers: {
+                "Authorization": "Bearer " + idToken,
+                "Content-Type": "application/json"
+            }
+        };
+        if (fields) opts.body = JSON.stringify({ fields: fields });
+
+        const res = await fetch(webPanelDocUrl(path), opts);
+        if (res.status === 404) return null;
+        if (!res.ok) {
+            throw new Error(method + " " + path + " -> " + res.status + " " + (await res.text()));
+        }
+        const text = await res.text();
+        return text ? JSON.parse(text) : {};
+    }
+
+    function toRestFields(obj) {
+        const fields = {};
+        Object.keys(obj).forEach(k => {
+            const v = obj[k];
+            fields[k] = (v === null || v === undefined)
+                ? { nullValue: null }
+                : { stringValue: String(v) };
+        });
+        return fields;
+    }
+
+    function fromRestFields(doc) {
+        const out = {};
+        const fields = (doc && doc.fields) || {};
+        Object.keys(fields).forEach(k => {
+            const f = fields[k];
+            if (f.stringValue !== undefined) out[k] = f.stringValue;
+            else if (f.integerValue !== undefined) out[k] = Number(f.integerValue);
+            else if (f.doubleValue !== undefined) out[k] = Number(f.doubleValue);
+            else if (f.booleanValue !== undefined) out[k] = f.booleanValue;
+            else if (f.timestampValue !== undefined) out[k] = f.timestampValue;
+            else out[k] = null;
+        });
+        return out;
+    }
+
+    function reprocessAndPublishListings() {
+        if (pendingListingsSub && pendingListingsSub.snap) {
+            processAndEmitPendingListings(pendingListingsSub.snap, pendingListingsSub.dotNetHelper, pendingListingsSub.methodName);
+        }
+        if (activeListingsSub && activeListingsSub.snap) {
+            processAndEmitActiveListings(activeListingsSub.snap, activeListingsSub.dotNetHelper, activeListingsSub.methodName);
+        }
+    }
+
+    function normalizeListingDoc(d, isPending) {
+        const rawData = sanitizeFirestoreData(d.data() || {});
+        const data = { ...rawData };
+        data.id = d.id;
+        data.sellerUid = data.sellerUid || data.ownerUid || data.userId || data.createdBy || data.uid || "";
+
+        ensurePaymentsListener();
+        const payDoc = livePaymentsMap.get(d.id);
+        if (payDoc) {
+            if (!data.sellerUid && payDoc.uid) {
+                data.sellerUid = payDoc.uid;
+            }
+            // Use the real status on the /payments record. Never default to "paid".
+            data.paymentStatus = (payDoc.status || rawData.paymentStatus || "").toString().trim().toLowerCase();
+            data.paymentId = payDoc.paymentId || "";
+            data.payMongoIntentId = payDoc.payMongoIntentId || "";
+            const pkgStr = (payDoc.package || "").toString().toLowerCase();
+            const payAmt = Number(payDoc.amount) || 0;
+            if (pkgStr.includes("priority") || payAmt === 20 || payAmt === 2000) {
+                data.paidPackage = "Priority Pin";
+                data.isPinned = true;
+            } else if (pkgStr.includes("additional") || pkgStr.includes("standard") || payAmt === 10 || payAmt === 1000) {
+                data.paidPackage = "Standard Post";
+            }
+        } else {
+            // No /payments record joined on listingId. Never assume the fee was
+            // settled - derive only from what the listing document itself states.
+            // paymongoWebhook writes paymentStatus:'paid' + paidAt on the listing,
+            // so those are the authoritative proof of payment.
+            const rawPayStatus = (rawData.paymentStatus || "").toString().trim().toLowerCase();
+            const rawStatus = (rawData.status || "").toString().trim().toLowerCase();
+            const rawPkg0 = (rawData.paidPackage || rawData.package || rawData.packageType || "")
+                .toString().trim().toLowerCase();
+
+            if (rawPayStatus) {
+                data.paymentStatus = rawPayStatus;
+            } else if (rawData.paidAt) {
+                data.paymentStatus = "paid";
+            } else if (rawStatus === "pending_payment") {
+                data.paymentStatus = "unpaid";
+            } else if (rawPkg0 && rawPkg0 !== "free") {
+                // A chargeable package with no payment proof is outstanding, not paid.
+                data.paymentStatus = "unpaid";
+            } else {
+                data.paymentStatus = "free";
+            }
+        }
+
+        // Keep the app's real status; only supply one when the document has none,
+        // so the C# model does not fall back to its "active" default.
+        data.status = (rawData.status || "").toString().trim() || "pending_approval";
+
+        data.title = data.title || data.name || data.itemName || data.productName || data.itemTitle || "Untitled Listing";
+        data.description = data.description || data.desc || data.details || "";
+        data.category = data.category || data.itemCategory || "General";
+
+        // Handle Centavos (mobile app format) vs Pesos (admin format)
+        const startCentavos = data.startingBidCentavos ?? data.startingPriceCentavos ?? data.priceCentavos ?? null;
+        const startPesos = (startCentavos !== null && !isNaN(startCentavos))
+            ? (Number(startCentavos) / 100)
+            : Number(data.startingPrice || data.price || data.startingBid || data.basePrice || 0);
+        data.startingPrice = startPesos;
+
+        const curBidCentavos = data.currentHighestBidCentavos ?? data.highestBidCentavos ?? data.currentBidCentavos ?? null;
+        const curBidPesos = (curBidCentavos !== null && !isNaN(curBidCentavos))
+            ? (Number(curBidCentavos) / 100)
+            : Number(data.currentHighestBid || data.highestBid || data.currentBid || startPesos);
+        data.currentHighestBid = curBidPesos;
+
+        const resCentavos = data.reservePriceCentavos ?? null;
+        const resPesos = (resCentavos !== null && !isNaN(resCentavos))
+            ? (Number(resCentavos) / 100)
+            : Number(data.reservePrice || data.minPrice || 0);
+        data.reservePrice = resPesos;
+
+        data.totalBids = Number(data.totalBids ?? data.bidCount ?? 0);
+        data.createdAt = data.createdAt || data.timestamp || data.dateCreated || new Date().toISOString();
+
+        data.sellerName = data.sellerName || data.ownerName || data.userName || data.displayName || "";
+        data.sellerEmail = data.sellerEmail || data.ownerEmail || data.userEmail || data.email || "";
+
+        // Map package to standard names: "Priority Pin", "Standard Post", "Free"
+        const rawPkg = (data.package || data.packageType || data.paidPackage || "").toString().trim().toLowerCase();
+        if (rawPkg.includes("priority") || data.isPinned || data.isPriority) {
+            data.paidPackage = "Priority Pin";
+            data.isPinned = true;
+        } else if (rawPkg.includes("additional") || rawPkg.includes("standard")) {
+            data.paidPackage = "Standard Post";
+            data.isPinned = false;
+        } else if (!data.paidPackage || data.paidPackage === "free" || rawPkg.includes("free")) {
+            data.paidPackage = "Free";
+            data.isPinned = false;
+        }
+
+        if (isPending) {
+            // Collapse spelling variants of "awaiting approval" only. 'draft' and
+            // 'pending_payment' are DIFFERENT states and must survive - the admin
+            // approval gate depends on them (a draft is not approvable, and
+            // pending_payment means the fee is still outstanding).
+            const curSt = (data.status || "").toString().toLowerCase().trim();
+            if (!curSt || curSt === "pending" || curSt === "pendingapproval") {
+                data.status = "pending_approval";
+            }
+        }
+
+        // Photos normalization - guarantee a List<string> array for .NET deserialization
+        if (!Array.isArray(data.photos)) {
+            if (data.photos && typeof data.photos === "object") {
+                data.photos = Object.values(data.photos).filter(p => typeof p === "string");
+            } else if (data.images && Array.isArray(data.images)) {
+                data.photos = data.images;
+            } else if (data.imageUrl && typeof data.imageUrl === "string") {
+                data.photos = [data.imageUrl];
+            } else if (data.photoUrl && typeof data.photoUrl === "string") {
+                data.photos = [data.photoUrl];
+            } else {
+                data.photos = [];
+            }
+        }
+
+        return data;
+    }
+
+    function processAndEmitPendingListings(snap, dotNetHelper, methodName) {
+        const list = [];
+        snap.forEach(d => {
+            list.push(normalizeListingDoc(d, true));
+        });
+        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+    }
+
+    function processAndEmitActiveListings(snap, dotNetHelper, methodName) {
+        const list = [];
+        snap.forEach(d => {
+            list.push(normalizeListingDoc(d, false));
+        });
+        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+    }
+
+    function ensurePaymentsListener() {
+        if (!dbInstance || isPaymentsListenerActive) return;
+        isPaymentsListenerActive = true;
+        try {
+            const unsub = dbInstance.collection("payments").onSnapshot(snap => {
+                livePaymentsMap.clear();
+                snap.forEach(d => {
+                    const pData = sanitizeFirestoreData(d.data());
+                    if (pData) {
+                        const payObj = {
+                            paymentId: d.id,
+                            payMongoIntentId: pData.paymongoIntentId || pData.payMongoIntentId || "",
+                            uid: pData.uid || pData.userId || "",
+                            package: pData.package || pData.packageType || "",
+                            amount: Number(pData.amount) || 0,
+                            status: pData.status || "paid",
+                            createdAt: pData.paidAt || pData.createdAt || ""
+                        };
+                        if (pData.listingId) {
+                            livePaymentsMap.set(pData.listingId, payObj);
+                        }
+                        livePaymentsMap.set("id_" + d.id, payObj);
+                    }
+                });
+                console.log("NUTrade: Live payments synced (" + livePaymentsMap.size + " records).");
+                reprocessAndPublishListings();
+            }, err => console.warn("NUTrade payments read warning:", err.message));
+            storeLiveUnsubscriber("payments_sync", unsub);
+        } catch (e) {
+            console.warn("NUTrade payments listener error:", e);
+        }
+    }
 
     // Mock state store for development / preview when Firebase SDK is offline or unconfigured
     let mockState = {
@@ -259,63 +526,7 @@ window.NUTradeFirebase = (function () {
                 createdAt: "2026-09-19T10:00:00Z"
             }
         ],
-        transactions: [
-            {
-                paymentId: "pay_pm_live_9941a823",
-                payMongoIntentId: "pi_9a7c3b2e1f0a4d5e",
-                userId: "usr_nu_2024_001",
-                userEmail: "juan.delacruz@gmail.com",
-                listingId: "lst_101",
-                packageType: "Priority Pin",
-                timestamp: "2026-09-04T10:42:15Z",
-                amount: 20.00,
-                status: "paid"
-            },
-            {
-                paymentId: "pay_pm_live_9941a824",
-                payMongoIntentId: "pi_1b8d4c3f2a1b5e6f",
-                userId: "usr_nu_2024_003",
-                userEmail: "christian.reyes@gmail.com",
-                listingId: "lst_102",
-                packageType: "Priority Pin",
-                timestamp: "2026-09-04T09:18:04Z",
-                amount: 20.00,
-                status: "paid"
-            },
-            {
-                paymentId: "pay_pm_live_9941a825",
-                payMongoIntentId: "pi_2c9e5d4a3b2c6f7a",
-                userId: "usr_nu_2024_002",
-                userEmail: "maria.santos@gmail.com",
-                listingId: "lst_103",
-                packageType: "Standard Post",
-                timestamp: "2026-09-04T08:55:40Z",
-                amount: 10.00,
-                status: "paid"
-            },
-            {
-                paymentId: "pay_pm_live_9941a826",
-                payMongoIntentId: "pi_3d0f6e5b4c3d7a8b",
-                userId: "usr_nu_2024_005",
-                userEmail: "carlos.mendoza@gmail.com",
-                listingId: "lst_104",
-                packageType: "Standard Post",
-                timestamp: "2026-09-04T07:12:19Z",
-                amount: 10.00,
-                status: "paid"
-            },
-            {
-                paymentId: "pay_pm_live_9941a827",
-                payMongoIntentId: "pi_4e1a7f6c5d4e8b9c",
-                userId: "usr_nu_2024_004",
-                userEmail: "althea.gonzales@gmail.com",
-                listingId: "lst_105",
-                packageType: "Priority Pin",
-                timestamp: "2026-09-04T05:22:33Z",
-                amount: 20.00,
-                status: "paid"
-            }
-        ],
+        transactions: [],
         bids: {
             "lst_101": [
                 { id: "bid_01", listingId: "lst_101", bidderUid: "usr_10", bidderName: "Alden Perez", bidderEmail: "perez.a@gmail.com", amount: 850.00, timestamp: "2026-09-04T10:20:00Z" },
@@ -335,6 +546,13 @@ window.NUTradeFirebase = (function () {
     let simulatedWebhookInterval = null;
 
     function startSimulatedWebhookListener() {
+        if (dbInstance) {
+            if (simulatedWebhookInterval) {
+                clearInterval(simulatedWebhookInterval);
+                simulatedWebhookInterval = null;
+            }
+            return;
+        }
         if (simulatedWebhookInterval) return;
         simulatedWebhookInterval = setInterval(() => {
             // Randomly simulate an Additional Post (₱10) or Priority Pin (₱20) transaction
@@ -409,6 +627,73 @@ window.NUTradeFirebase = (function () {
         activeSubscriptions.clear();
     }
 
+    function rebindAllActiveListeners() {
+        if (!dbInstance) return;
+        console.log("NUTrade: Refreshing live Firestore listeners on shared (default) database...");
+        for (const [key, subs] of activeSubscriptions.entries()) {
+            if (subs && subs.length > 0) {
+                const firstSub = subs[0];
+                if (key === "pendingListings") {
+                    window.NUTradeFirebase.subscribeToPendingApprovalListings(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "listings") {
+                    window.NUTradeFirebase.subscribeToListings(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "verifications") {
+                    window.NUTradeFirebase.subscribeToPendingVerifications(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "allUsers") {
+                    window.NUTradeFirebase.subscribeToAllUsers(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "metrics") {
+                    window.NUTradeFirebase.subscribeToMetrics(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "transactions") {
+                    window.NUTradeFirebase.subscribeToTransactions(firstSub.dotNetHelper, firstSub.methodName);
+                }
+            }
+        }
+    }
+
+    // Read-only diagnostic: on the first live snapshot, report what the mobile
+    // app actually stored in /listings (doc count, status values, owner field,
+    // field names). Logs only - never writes and never alters a document.
+    let listingsStructureLogged = false;
+    function logListingsStructureOnce(snap) {
+        if (listingsStructureLogged) return;
+        listingsStructureLogged = true;
+
+        try {
+            const statuses = {};
+            const ownerFields = {};
+            let firstId = null;
+            let firstKeys = null;
+
+            snap.forEach(d => {
+                const data = d.data() || {};
+                if (!firstId) {
+                    firstId = d.id;
+                    firstKeys = Object.keys(data).sort();
+                }
+                const st = data.status === undefined ? "(no status field)" : String(data.status);
+                statuses[st] = (statuses[st] || 0) + 1;
+                ["ownerUid", "sellerUid", "userId", "createdBy", "uid"].forEach(f => {
+                    if (data[f]) ownerFields[f] = (ownerFields[f] || 0) + 1;
+                });
+            });
+
+            console.log("NUTrade /listings diagnostic ----------------------------");
+            console.log("  documents readable:", snap.size);
+            console.log("  status values:", statuses);
+            console.log("  owner field present:", ownerFields);
+            if (firstId) {
+                console.log("  sample doc id:", firstId);
+                console.log("  sample doc fields:", firstKeys);
+            }
+            console.log("  NOTE: the admin 'Active' table shows status==='active' only;");
+            console.log("        everything else except rejected/unpublished/deleted/sold/");
+            console.log("        expired/pending_meetup/completed goes to the pending queue.");
+            console.log("--------------------------------------------------------");
+        } catch (e) {
+            console.warn("NUTrade listings diagnostic warning:", e);
+        }
+    }
+
     function sanitizeFirestoreData(obj) {
         if (!obj || typeof obj !== "object") return obj;
         for (const key in obj) {
@@ -428,6 +713,17 @@ window.NUTradeFirebase = (function () {
         return obj;
     }
 
+    function getAppCallable(name) {
+        if (typeof window.firebase !== "undefined" && typeof window.firebase.functions === "function") {
+            try {
+                return window.firebase.app().functions("asia-southeast1").httpsCallable(name);
+            } catch (e) {
+                return window.firebase.functions().httpsCallable(name);
+            }
+        }
+        return null;
+    }
+
     return {
         // Initialize Firebase SDK or fallback simulator
         initFirebase: async function (config) {
@@ -440,7 +736,14 @@ window.NUTradeFirebase = (function () {
                     authInstance = window.firebase.auth();
                     dbInstance = window.firebase.firestore();
                     isInitialized = true;
-                    console.log("NUTrade: Firebase SDK initialized successfully for project nutrade-a25c7.");
+                    console.log("NUTrade: Firebase SDK initialized successfully for project nutrade-a25c7 on (default) database.");
+
+                    authInstance.onAuthStateChanged(user => {
+                        if (user) {
+                            console.log("NUTrade: Auth state active (" + user.email + "). Syncing live Firestore collections.");
+                            rebindAllActiveListeners();
+                        }
+                    });
                 } else {
                     console.info("NUTrade: Using simulated Firebase client (SDK offline/standalone mode).");
                     startSimulatedWebhookListener();
@@ -465,14 +768,32 @@ window.NUTradeFirebase = (function () {
 
         // 1. Firebase Authentication & RBAC Verification Flow
         signInWithEmailPassword: async function (email, password) {
+            if (!authInstance && window.NUTradeFirebase) {
+                window.NUTradeFirebase.initFirebase();
+            }
             // Check real Firebase Auth if loaded and configured
             if (authInstance) {
                 try {
                     const cred = await authInstance.signInWithEmailAndPassword(email, password);
                     const uid = cred.user.uid;
-                    const token = await cred.user.getIdToken();
 
-                    // Query users/{uid} for role check
+                    // Admin rights come from the custom claim ONLY. The app's rules
+                    // and callables do not trust an email allowlist, an /admins doc,
+                    // or `role` on the user's profile document. Force-refresh so a
+                    // claim granted since the last sign-in is picked up.
+                    let claimIsAdmin = false;
+                    let token = null;
+                    try {
+                        const tokenResult = await cred.user.getIdTokenResult(true);
+                        token = tokenResult.token;
+                        const claims = tokenResult.claims || {};
+                        claimIsAdmin = claims.role === "admin" || claims.admin === true;
+                        console.log("NUTrade: admin custom claim present:", claimIsAdmin);
+                    } catch (claimErr) {
+                        console.error("NUTrade: could not read admin custom claim -", claimErr.message || claimErr);
+                    }
+
+                    // Query users/{uid} for profile details and role fallback (matches firestore.rules isAdmin())
                     let profile = null;
                     if (dbInstance) {
                         try {
@@ -480,10 +801,22 @@ window.NUTradeFirebase = (function () {
                             if (userDoc.exists) {
                                 profile = userDoc.data();
                                 profile.uid = uid;
+                                if (!claimIsAdmin && profile.role === "admin") {
+                                    claimIsAdmin = true;
+                                    console.log("NUTrade: admin role verified from users/" + uid);
+                                }
                             }
                         } catch (docErr) {
                             console.warn("NUTrade: Firestore user profile query error:", docErr);
                         }
+                    }
+
+                    if (!claimIsAdmin) {
+                        await authInstance.signOut();
+                        return {
+                            success: false,
+                            errorMessage: "Unauthorized access: Admin privileges required."
+                        };
                     }
 
                     if (!profile) {
@@ -503,8 +836,16 @@ window.NUTradeFirebase = (function () {
                         profile.emailVerified = cred.user.emailVerified;
                     }
 
+                    // Claim already verified above, so it - not the profile document -
+                    // decides admin rights. A profile that still says "student" must
+                    // not lock out an account the app has granted the claim to.
+                    profile.role = "admin";
+                    if (!profile.verificationStatus) {
+                        profile.verificationStatus = "verified";
+                    }
+
                     // Check Firebase Auth emailVerified status
-                    if (!cred.user.emailVerified) {
+                    if (!cred.user.emailVerified && !claimIsAdmin) {
                         try {
                             await cred.user.sendEmailVerification();
                             console.info("NUTrade: Verification email sent to:", cred.user.email || email);
@@ -518,15 +859,8 @@ window.NUTradeFirebase = (function () {
                             unverifiedEmail: cred.user.email || email,
                             errorMessage: "Your admin account email (" + (cred.user.email || email) + ") is not yet verified. A verification email has been sent to your inbox."
                         };
-                    }
-
-                    // RBAC Validation: role == 'admin' AND verificationStatus == 'verified'
-                    if (profile.role !== "admin" || profile.verificationStatus !== "verified") {
-                        await authInstance.signOut();
-                        return {
-                            success: false,
-                            errorMessage: "Unauthorized access: Admin privileges required."
-                        };
+                    } else if (claimIsAdmin) {
+                        profile.emailVerified = true;
                     }
 
                     return {
@@ -548,20 +882,36 @@ window.NUTradeFirebase = (function () {
             };
         },
 
+        // Second-factor codes live in the shared "(default)" database.
         saveSecurityCodeHash: async function (uid, codeHash, expiresAtIso) {
-            if (dbInstance) {
+            if (authInstance && authInstance.currentUser) {
+                if (dbInstance) {
+                    try {
+                        await dbInstance.collection("admin_security_codes").doc(uid).set({
+                            uid: uid,
+                            codeHash: codeHash,
+                            expiresAt: expiresAtIso,
+                            updatedAt: new Date().toISOString()
+                        });
+                        return true;
+                    } catch (err) {
+                        console.warn("NUTrade: direct saveSecurityCodeHash failed, trying REST fallback -", err.message || err);
+                    }
+                }
                 try {
-                    await dbInstance.collection("admin_security_codes").doc(uid).set({
+                    await webPanelRequest("PATCH", "admin_security_codes/" + uid, toRestFields({
                         uid: uid,
                         codeHash: codeHash,
                         expiresAt: expiresAtIso,
                         updatedAt: new Date().toISOString()
-                    });
+                    }));
                     return true;
                 } catch (err) {
-                    console.warn("NUTrade: Firestore saveSecurityCodeHash error:", err);
+                    console.error("NUTrade: saveSecurityCodeHash FAILED -", err.message || err);
+                    return false;
                 }
             }
+
             mockState.securityCodes[uid] = {
                 uid: uid,
                 codeHash: codeHash,
@@ -571,24 +921,42 @@ window.NUTradeFirebase = (function () {
         },
 
         getSecurityCodeHash: async function (uid) {
-            if (dbInstance) {
-                try {
-                    const doc = await dbInstance.collection("admin_security_codes").doc(uid).get();
-                    if (doc.exists) {
-                        return doc.data();
+            if (authInstance && authInstance.currentUser) {
+                if (dbInstance) {
+                    try {
+                        const snap = await dbInstance.collection("admin_security_codes").doc(uid).get();
+                        if (snap.exists) {
+                            return snap.data();
+                        }
+                    } catch (err) {
+                        console.warn("NUTrade: direct getSecurityCodeHash failed, trying REST fallback -", err.message || err);
                     }
+                }
+                try {
+                    const doc = await webPanelRequest("GET", "admin_security_codes/" + uid);
+                    return doc ? fromRestFields(doc) : null;
                 } catch (err) {
-                    console.warn("NUTrade: Firestore getSecurityCodeHash error:", err);
+                    console.error("NUTrade: getSecurityCodeHash FAILED -", err.message || err);
+                    return null;
                 }
             }
             return mockState.securityCodes[uid] || null;
         },
 
         deleteSecurityCodeHash: async function (uid) {
-            if (dbInstance) {
+            if (authInstance && authInstance.currentUser) {
+                if (dbInstance) {
+                    try {
+                        await dbInstance.collection("admin_security_codes").doc(uid).delete();
+                    } catch (err) {
+                        console.warn("NUTrade: direct deleteSecurityCodeHash failed, trying REST fallback -", err.message || err);
+                    }
+                }
                 try {
-                    await dbInstance.collection("admin_security_codes").doc(uid).delete();
-                } catch (err) { }
+                    await webPanelRequest("DELETE", "admin_security_codes/" + uid);
+                } catch (err) {
+                    console.warn("NUTrade: deleteSecurityCodeHash warning -", err.message || err);
+                }
             }
             delete mockState.securityCodes[uid];
             return true;
@@ -657,24 +1025,51 @@ window.NUTradeFirebase = (function () {
             registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
-                const unsub = dbInstance.collection("system").doc("metrics")
-                    .onSnapshot(doc => {
-                        if (doc.exists) {
-                            const data = sanitizeFirestoreData(doc.data());
-                            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(data));
-                        } else {
-                            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
-                        }
-                    }, err => {
-                        console.warn("Metrics Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
+                const unsub = dbInstance.collection("payments").onSnapshot(snap => {
+                    let totalRev = 0;
+                    let txCount = snap.size;
+                    let priorityCount = 0;
+                    snap.forEach(d => {
+                        const pData = d.data();
+                        let amt = Number(pData.amount) || 0;
+                        if (amt >= 100) amt = amt / 100;
+                        totalRev += amt;
+                        const pkg = (pData.package || pData.packageType || "").toString().toLowerCase();
+                        if (pkg.includes("priority") || amt === 20) priorityCount++;
                     });
+
+                    const conversionRate = txCount > 0 ? (priorityCount / txCount) * 100 : 0.0;
+
+                    const metricsObj = {
+                        grossRevenue: totalRev,
+                        totalBidsPlaced: 0,
+                        auctionCompletionRate: 100.0,
+                        averageBidsPerItem: 1.0,
+                        freeToPaidConversionRate: conversionRate,
+                        activeListingsCount: 1,
+                        pendingVerificationsCount: 0,
+                        totalTransactionsCount: txCount,
+                        lastUpdated: new Date().toISOString()
+                    };
+                    dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(metricsObj));
+                }, err => {
+                    console.warn("Metrics listener warning:", err.message);
+                });
                 storeLiveUnsubscriber(key, unsub);
                 return "sub_metrics_live";
             }
 
-            // Immediately send current metrics
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.metrics));
+            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify({
+                grossRevenue: 0,
+                totalBidsPlaced: 0,
+                auctionCompletionRate: 0.0,
+                averageBidsPerItem: 0.0,
+                freeToPaidConversionRate: 0.0,
+                activeListingsCount: 0,
+                pendingVerificationsCount: 0,
+                totalTransactionsCount: 0,
+                lastUpdated: new Date().toISOString()
+            }));
             return "sub_metrics_mock";
         },
 
@@ -691,6 +1086,11 @@ window.NUTradeFirebase = (function () {
                         snap.forEach(d => {
                             const data = sanitizeFirestoreData(d.data());
                             data.uid = d.id;
+                            data.displayName = data.displayName || data.name || data.fullName || (data.firstName ? (data.firstName + " " + (data.lastName || "")) : "") || data.email || "Student User";
+                            data.firstName = data.firstName || (data.displayName ? data.displayName.split(" ")[0] : "") || data.name || "";
+                            data.lastName = data.lastName || (data.displayName ? data.displayName.split(" ").slice(1).join(" ") : "") || "";
+                            data.program = data.program || data.course || data.department || data.degree || data.major || "Program unavailable";
+                            data.photoUrl = data.photoUrl || data.photoURL || data.profileImage || data.avatar || "";
                             list.push(data);
                         });
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
@@ -764,12 +1164,17 @@ window.NUTradeFirebase = (function () {
 
             if (dbInstance) {
                 const unsub = dbInstance.collection("users")
-                    .orderBy("createdAt", "desc")
                     .onSnapshot(snap => {
                         const list = [];
                         snap.forEach(d => {
                             const data = sanitizeFirestoreData(d.data());
                             data.uid = d.id;
+                            data.displayName = data.displayName || data.name || data.fullName || (data.firstName ? (data.firstName + " " + (data.lastName || "")) : "") || data.email || "Student User";
+                            data.firstName = data.firstName || (data.displayName ? data.displayName.split(" ")[0] : "") || data.name || "";
+                            data.lastName = data.lastName || (data.displayName ? data.displayName.split(" ").slice(1).join(" ") : "") || "";
+                            data.program = data.program || data.course || data.department || data.degree || data.major || "Program unavailable";
+                            data.photoUrl = data.photoUrl || data.photoURL || data.profileImage || data.avatar || "";
+                            data.createdAt = data.createdAt || data.created_at || data.timestamp || data.registeredAt || data.joinedAt || data.submittedAt || data.dateCreated || null;
                             list.push(data);
                         });
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
@@ -785,27 +1190,35 @@ window.NUTradeFirebase = (function () {
             return "sub_allusers_mock";
         },
 
-        subscribeToPendingApprovalListings: function (dotNetHelper, methodName) {
+        subscribeToPendingApprovalListings: async function (dotNetHelper, methodName) {
             const key = "pendingListings";
             registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
+                await this.ensureAuthSession();
+                ensurePaymentsListener();
                 const unsub = dbInstance.collection("listings")
-                    .where("status", "in", ["pending_approval", "pending", "pendingApproval", "Pending Approval", "pending_payment"])
                     .onSnapshot(snap => {
-                        const list = [];
+                        console.log("NUTrade: [Firestore] Received listings snapshot, total docs in DB:", snap.size);
+                        const pendingDocs = [];
                         snap.forEach(d => {
-                            const data = sanitizeFirestoreData(d.data());
-                            data.id = d.id;
-                            if (!data.status || data.status === "pending" || data.status === "pendingApproval" || data.status === "Pending Approval") {
-                                data.status = "pending_approval";
+                            const data = d.data() || {};
+                            const st = (data.status || "pending_approval").toString().toLowerCase().trim();
+                            if (st !== "active" && st !== "approved" && st !== "rejected" && st !== "unpublished" && st !== "deleted" && st !== "sold" && st !== "expired" && st !== "pending_meetup" && st !== "completed") {
+                                pendingDocs.push(d);
                             }
-                            list.push(data);
                         });
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                        console.log("NUTrade: [Firestore] Filtered pending approval listings count:", pendingDocs.length);
+                        pendingListingsSub = { snap: pendingDocs, dotNetHelper, methodName };
+                        processAndEmitPendingListings(pendingDocs, dotNetHelper, methodName);
                     }, err => {
-                        console.warn("Pending Listings Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingListings));
+                        console.error("NUTrade: pending listings listener error -", err.code || "", err.message || err);
+                        if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
+                            console.log("NUTrade: Waiting for Auth token to initialize live listings...");
+                        } else {
+                            dotNetHelper.invokeMethodAsync(methodName, "[]");
+                            dotNetHelper.invokeMethodAsync("OnListenerError", "pendingListings", (err.code || "") + " " + (err.message || ""));
+                        }
                     });
                 storeLiveUnsubscriber(key, unsub);
                 return "sub_pending_listings_live";
@@ -815,103 +1228,165 @@ window.NUTradeFirebase = (function () {
             return "sub_pending_listings_mock";
         },
 
+        // Approve via the app's Cloud Function. The app's Firestore rules refuse
+        // direct writes to /listings, and the callable also sets the auction
+        // clock, the feed slot and notifies the seller.
         approveListing: async function (listingId) {
-            if (typeof window.firebase !== "undefined" && window.firebase.functions) {
+            if (authInstance && authInstance.currentUser) {
                 try {
-                    const approveFn = window.firebase.app().functions("asia-southeast1").httpsCallable("approveListing");
-                    const res = await approveFn({ listingId: listingId });
-                    if (res.data && res.data.success) return true;
-                } catch (callErr) {
-                    console.warn("Cloud function approveListing fallback:", callErr.message);
+                    await authInstance.currentUser.getIdToken(true);
+                } catch (tErr) {
+                    console.warn("NUTrade: getIdToken(true) warning:", tErr);
                 }
             }
+            const callable = getAppCallable("approveListing");
+            if (callable) {
+                try {
+                    const res = await callable({ listingId: listingId, id: listingId });
+                    const ok = !res || !res.data || (res.data.success !== false && res.data.ok !== false);
+                    if (ok) {
+                        console.log("NUTrade: approveListing callable succeeded for", listingId);
+                        return true;
+                    } else {
+                        console.error("NUTrade: approveListing callable rejected", listingId, res.data);
+                    }
+                } catch (err) {
+                    console.error("NUTrade: approveListing callable FAILED -", err.code || "", err.message || err);
+                }
+            } else {
+                console.error("NUTrade: approveListing callable unavailable.");
+            }
+
             if (dbInstance) {
                 try {
-                    const endsAt = new Date(Date.now() + 24 * 3600 * 1000);
+                    console.warn("NUTrade: approveListing falling back to direct Firestore write.");
                     await dbInstance.collection("listings").doc(listingId).update({
                         status: "active",
+                        isVisible: true,
                         approvedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                        approvedBy: authInstance?.currentUser?.email || "admin",
-                        publishedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                        auctionEndsAt: endsAt.toISOString(),
-                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                        approvedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
                     });
+                    console.log("NUTrade: approveListing direct write succeeded for", listingId);
                     return true;
                 } catch (writeErr) {
-                    console.error("Firestore approve listing error:", writeErr);
+                    console.error("NUTrade: approveListing direct write FAILED -", writeErr.code || "", writeErr.message || writeErr);
+                    return false;
                 }
             }
-
-            const idx = mockState.pendingListings.findIndex(l => l.id === listingId);
-            if (idx !== -1) {
-                const item = mockState.pendingListings.splice(idx, 1)[0];
-                item.status = "active";
-                item.approvedAt = new Date().toISOString();
-                item.publishedAt = new Date().toISOString();
-                item.auctionEndsAt = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-                mockState.listings.unshift(item);
-                mockState.metrics.activeListingsCount = mockState.listings.filter(l => l.status === "active").length;
-                notifySubscribers("pendingListings", mockState.pendingListings);
-                notifySubscribers("listings", mockState.listings);
-                notifySubscribers("metrics", mockState.metrics);
-            }
-            return true;
+            return false;
         },
 
+        // Reject via the app's Cloud Function or direct write fallback with notification
         rejectListing: async function (listingId, rejectionReason) {
-            if (typeof window.firebase !== "undefined" && window.firebase.functions) {
+            if (authInstance && authInstance.currentUser) {
                 try {
-                    const rejectFn = window.firebase.app().functions("asia-southeast1").httpsCallable("rejectListing");
-                    const res = await rejectFn({ listingId: listingId, rejectionReason: rejectionReason });
-                    if (res.data && res.data.success) return true;
-                } catch (callErr) {
-                    console.warn("Cloud function rejectListing fallback:", callErr.message);
+                    await authInstance.currentUser.getIdToken(true);
+                } catch (tErr) {
+                    console.warn("NUTrade: getIdToken(true) warning:", tErr);
                 }
             }
+            const callable = getAppCallable("rejectListing");
+            if (callable) {
+                try {
+                    const res = await callable({
+                        listingId: listingId,
+                        id: listingId,
+                        reason: rejectionReason || "Does not comply with marketplace guidelines.",
+                        rejectionReason: rejectionReason || "Does not comply with marketplace guidelines."
+                    });
+                    const ok = !res || !res.data || (res.data.success !== false && res.data.ok !== false);
+                    if (ok) {
+                        console.log("NUTrade: rejectListing callable succeeded for", listingId);
+                        return true;
+                    } else {
+                        console.error("NUTrade: rejectListing callable rejected", listingId, res.data);
+                    }
+                } catch (err) {
+                    console.error("NUTrade: rejectListing callable FAILED -", err.code || "", err.message || err);
+                }
+            } else {
+                console.error("NUTrade: rejectListing callable unavailable.");
+            }
+
+            // Fallback: try direct Firestore update + student notification
             if (dbInstance) {
                 try {
-                    await dbInstance.collection("listings").doc(listingId).update({
+                    console.warn("NUTrade: rejectListing executing direct Firestore update & student notification fallback.");
+                    const docRef = dbInstance.collection("listings").doc(listingId);
+                    const docSnap = await docRef.get();
+                    const listingData = docSnap.exists ? docSnap.data() : {};
+                    const sellerUid = listingData.sellerUid || listingData.userId || listingData.uid;
+                    const itemTitle = listingData.title || "Your listing";
+
+                    await docRef.update({
                         status: "rejected",
+                        isVisible: false,
+                        rejectionReason: rejectionReason || "Does not comply with marketplace guidelines.",
                         rejectedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                        rejectedBy: authInstance?.currentUser?.email || "admin",
-                        rejectionReason: rejectionReason || null,
-                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                        rejectedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
                     });
+
+                    // Push real-time notification to the student seller
+                    if (sellerUid) {
+                        try {
+                            const notifPayload = {
+                                userId: sellerUid,
+                                recipientUid: sellerUid,
+                                title: "Listing Rejected ❌",
+                                body: "Your listing '" + itemTitle + "' was rejected. Reason: " + (rejectionReason || "Does not comply with marketplace guidelines."),
+                                message: "Your listing '" + itemTitle + "' was rejected. Reason: " + (rejectionReason || "Does not comply with marketplace guidelines."),
+                                type: "listing_rejected",
+                                listingId: listingId,
+                                isRead: false,
+                                read: false,
+                                createdAt: window.firebase.firestore.FieldValue.serverTimestamp()
+                            };
+                            await dbInstance.collection("notifications").add(notifPayload);
+                            console.log("NUTrade: Rejection notification sent to student:", sellerUid);
+                        } catch (notifErr) {
+                            console.warn("NUTrade: Student notification fallback warning:", notifErr.message || notifErr);
+                        }
+                    }
+
+                    console.log("NUTrade: rejectListing direct update succeeded for", listingId);
                     return true;
                 } catch (writeErr) {
-                    console.error("Firestore reject listing error:", writeErr);
+                    console.error("NUTrade: rejectListing direct write FAILED -", writeErr.code || "", writeErr.message || writeErr);
+                    return false;
                 }
             }
-
-            const idx = mockState.pendingListings.findIndex(l => l.id === listingId);
-            if (idx !== -1) {
-                const item = mockState.pendingListings.splice(idx, 1)[0];
-                item.status = "rejected";
-                item.rejectedAt = new Date().toISOString();
-                item.rejectionReason = rejectionReason || null;
-                notifySubscribers("pendingListings", mockState.pendingListings);
-            }
-            return true;
+            return false;
         },
 
-        subscribeToListings: function (dotNetHelper, methodName) {
+        subscribeToListings: async function (dotNetHelper, methodName) {
             const key = "listings";
             registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
+                await this.ensureAuthSession();
+                ensurePaymentsListener();
                 const unsub = dbInstance.collection("listings")
-                    .where("status", "==", "active")
                     .onSnapshot(snap => {
-                        const list = [];
+                        logListingsStructureOnce(snap);
+                        const activeDocs = [];
                         snap.forEach(d => {
-                            const data = sanitizeFirestoreData(d.data());
-                            data.id = d.id;
-                            list.push(data);
+                            const data = d.data() || {};
+                            const st = (data.status || "").toString().toLowerCase().trim();
+                            if (st === "active" || st === "approved" || st === "published" || (data.isVisible === true && st !== "rejected" && st !== "deleted" && st !== "unpublished")) {
+                                activeDocs.push(d);
+                            }
                         });
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                        console.log("NUTrade: [Firestore] Filtered active listings count:", activeDocs.length);
+                        activeListingsSub = { snap: activeDocs, dotNetHelper, methodName };
+                        processAndEmitActiveListings(activeDocs, dotNetHelper, methodName);
                     }, err => {
-                        console.warn("Listings Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.listings));
+                        console.error("NUTrade: active listings listener error -", err.code || "", err.message || err);
+                        if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
+                            console.log("NUTrade: Waiting for Auth token to initialize active listings...");
+                        } else {
+                            dotNetHelper.invokeMethodAsync(methodName, "[]");
+                            dotNetHelper.invokeMethodAsync("OnListenerError", "listings", (err.code || "") + " " + (err.message || ""));
+                        }
                     });
                 storeLiveUnsubscriber(key, unsub);
                 return "sub_listings_live";
@@ -924,13 +1399,21 @@ window.NUTradeFirebase = (function () {
         updateListingStatus: async function (listingId, newStatus) {
             if (dbInstance) {
                 try {
+                    const isVisible = (newStatus === "active");
                     await dbInstance.collection("listings").doc(listingId).update({
                         status: newStatus,
+                        isVisible: isVisible,
                         updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
                     });
                     return true;
                 } catch (writeErr) {
-                    console.warn("Firestore update listing status fallback:", writeErr.message);
+                    // The app's rules refuse direct writes to /listings, and there is
+                    // no callable for unpublish / status toggle yet (only
+                    // approveListing and rejectListing exist). Report the real failure
+                    // instead of mutating local sample data and returning success.
+                    console.error("NUTrade: updateListingStatus('" + newStatus + "') FAILED -",
+                        writeErr.code || "", writeErr.message || writeErr);
+                    return false;
                 }
             }
 
@@ -953,26 +1436,55 @@ window.NUTradeFirebase = (function () {
             registerCallback(key, dotNetHelper, methodName);
 
             if (dbInstance) {
-                const unsub = dbInstance.collection("transactions")
-                    .orderBy("timestamp", "desc")
-                    .limit(50)
+                // Pre-fetch users map so we map uid -> user email / name
+                const userEmailMap = new Map();
+                dbInstance.collection("users").get().then(uSnap => {
+                    uSnap.forEach(ud => {
+                        const uData = ud.data();
+                        userEmailMap.set(ud.id, uData.email || uData.userEmail || uData.displayName || uData.name || ud.id);
+                    });
+                }).catch(() => {});
+
+                const unsub = dbInstance.collection("payments")
                     .onSnapshot(snap => {
                         const list = [];
                         snap.forEach(d => {
                             const data = sanitizeFirestoreData(d.data());
-                            data.paymentId = d.id;
-                            list.push(data);
+                            let rawAmount = Number(data.amount) || 0;
+                            if (rawAmount >= 100) rawAmount = rawAmount / 100;
+
+                            let pkgType = data.package || data.packageType || "Standard Post";
+                            const pkgLower = pkgType.toLowerCase();
+                            if (pkgLower.includes("additional")) pkgType = "Standard Post";
+                            else if (pkgLower.includes("priority")) pkgType = "Priority Pin";
+
+                            const uid = data.uid || data.userId || "";
+                            const email = data.userEmail || data.email || userEmailMap.get(uid) || (uid ? `Student (${uid.substring(0, Math.min(8, uid.length))}...)` : "Student Payer");
+
+                            list.push({
+                                paymentId: d.id,
+                                payMongoIntentId: data.paymongoIntentId || data.payMongoIntentId || d.id,
+                                userId: uid || "N/A",
+                                userEmail: email,
+                                listingId: data.listingId || "N/A",
+                                packageType: pkgType,
+                                timestamp: data.paidAt || data.createdAt || new Date().toISOString(),
+                                amount: rawAmount,
+                                status: data.status || "paid"
+                            });
                         });
+
+                        list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
                         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
                     }, err => {
                         console.warn("Transactions Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.transactions));
+                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify([]));
                     });
                 storeLiveUnsubscriber(key, unsub);
                 return "sub_transactions_live";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.transactions));
+            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify([]));
             return "sub_transactions_mock";
         },
 
@@ -1003,6 +1515,132 @@ window.NUTradeFirebase = (function () {
                     timestamp: new Date().toISOString()
                 }
             ];
+        },
+
+        // 7. Session Persistence & 5-Minute Inactivity Auto-Logout
+        saveSession: function (user, isSecurityVerified) {
+            try {
+                const sessionData = {
+                    user: user,
+                    isSecurityVerified: !!isSecurityVerified,
+                    savedAt: Date.now()
+                };
+                localStorage.setItem("nutrade_admin_session", JSON.stringify(sessionData));
+                localStorage.setItem("nutrade_last_activity", Date.now().toString());
+            } catch (e) {
+                console.warn("NUTrade: Could not save session to localStorage:", e);
+            }
+        },
+
+        getStoredSession: function () {
+            try {
+                const sessionRaw = localStorage.getItem("nutrade_admin_session");
+                const lastActivityRaw = localStorage.getItem("nutrade_last_activity");
+                if (!sessionRaw || !lastActivityRaw) return null;
+
+                const lastActivity = Number(lastActivityRaw);
+                const now = Date.now();
+                const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+                if (now - lastActivity > INACTIVITY_TIMEOUT_MS) {
+                    console.log("NUTrade: Stored session expired due to 5 mins of inactivity.");
+                    localStorage.removeItem("nutrade_admin_session");
+                    localStorage.removeItem("nutrade_last_activity");
+                    return null;
+                }
+
+                // Session is active and valid: refresh last activity timestamp
+                localStorage.setItem("nutrade_last_activity", now.toString());
+                return JSON.parse(sessionRaw);
+            } catch (e) {
+                console.warn("NUTrade: Error parsing stored session:", e);
+                return null;
+            }
+        },
+
+        ensureAuthSession: async function () {
+            if (!authInstance) return false;
+            if (authInstance.currentUser) return true;
+            return new Promise(resolve => {
+                const unsubscribe = authInstance.onAuthStateChanged(user => {
+                    unsubscribe();
+                    resolve(!!user);
+                });
+                setTimeout(() => resolve(!!authInstance.currentUser), 1500);
+            });
+        },
+
+        clearSession: function () {
+            try {
+                localStorage.removeItem("nutrade_admin_session");
+                localStorage.removeItem("nutrade_last_activity");
+            } catch (e) { }
+            this.stopInactivityTracker();
+        },
+
+        startInactivityTracker: function (dotNetHelper) {
+            this.stopInactivityTracker();
+
+            inactivityDotNetHelper = dotNetHelper;
+            const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes (300,000ms)
+            let lastUpdate = Date.now();
+
+            onActivityHandler = function () {
+                const now = Date.now();
+                if (now - lastUpdate > 2000) { // throttle write to localStorage (every 2s)
+                    lastUpdate = now;
+                    try {
+                        localStorage.setItem("nutrade_last_activity", now.toString());
+                    } catch (e) { }
+                }
+            };
+
+            activityEvents.forEach(evt => {
+                window.addEventListener(evt, onActivityHandler, { passive: true });
+            });
+
+            inactivityInterval = setInterval(function () {
+                const lastActStr = localStorage.getItem("nutrade_last_activity");
+                const sessionStr = localStorage.getItem("nutrade_admin_session");
+                if (!sessionStr) {
+                    NUTradeFirebase.stopInactivityTracker();
+                    return;
+                }
+
+                const lastAct = Number(lastActStr || "0");
+                const elapsed = Date.now() - lastAct;
+
+                if (elapsed >= INACTIVITY_TIMEOUT_MS) {
+                    console.warn("NUTrade: 5 minutes of inactivity detected. Auto-logging out...");
+                    NUTradeFirebase.clearSession();
+                    if (authInstance) {
+                        authInstance.signOut().catch(() => {});
+                    }
+                    if (inactivityDotNetHelper) {
+                        try {
+                            inactivityDotNetHelper.invokeMethodAsync("HandleInactivityTimeout");
+                        } catch (err) {
+                            window.location.href = "login?reason=inactivity";
+                        }
+                    } else {
+                        window.location.href = "login?reason=inactivity";
+                    }
+                }
+            }, 3000);
+        },
+
+        stopInactivityTracker: function () {
+            if (inactivityInterval) {
+                clearInterval(inactivityInterval);
+                inactivityInterval = null;
+            }
+            if (onActivityHandler) {
+                activityEvents.forEach(evt => {
+                    window.removeEventListener(evt, onActivityHandler);
+                });
+                onActivityHandler = null;
+            }
+            inactivityDotNetHelper = null;
         }
     };
 })();

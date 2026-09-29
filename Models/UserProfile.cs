@@ -13,6 +13,15 @@ public class UserProfile
     [JsonPropertyName("displayName")]
     public string DisplayName { get; set; } = string.Empty;
 
+    [JsonPropertyName("firstName")]
+    public string FirstName { get; set; } = string.Empty;
+
+    [JsonPropertyName("lastName")]
+    public string LastName { get; set; } = string.Empty;
+
+    [JsonPropertyName("program")]
+    public string Program { get; set; } = string.Empty;
+
     [JsonPropertyName("role")]
     public string Role { get; set; } = "student"; // "admin", "student"
 
@@ -45,4 +54,18 @@ public class UserProfile
 
     public bool IsAdmin => string.Equals(Role, "admin", StringComparison.OrdinalIgnoreCase);
     public bool IsVerified => string.Equals(VerificationStatus, "verified", StringComparison.OrdinalIgnoreCase);
+
+    public string FormattedProgram
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Program) || string.Equals(Program, "Program unavailable", StringComparison.OrdinalIgnoreCase))
+                return "School of Program";
+
+            if (Program.StartsWith("School of", StringComparison.OrdinalIgnoreCase))
+                return Program;
+
+            return $"School of {Program}";
+        }
+    }
 }

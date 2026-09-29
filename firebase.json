@@ -2,7 +2,7 @@
   "functions": [
     {
       "source": "functions",
-      "codebase": "default",
+      "codebase": "web",
       "ignore": [
         "node_modules",
         ".git",
@@ -12,6 +12,7 @@
     }
   ],
   "firestore": {
+    "database": "(default)",
     "rules": "firestore.rules"
   }
 }
