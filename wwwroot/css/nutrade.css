@@ -66,7 +66,13 @@ body {
   line-height: 1.5;
 }
 
-h1, h2, h3, h4, h5, h6, .nu-brand-font {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.nu-brand-font {
   font-family: 'Outfit', sans-serif;
   color: var(--nu-navy-primary);
   letter-spacing: -0.02em;
@@ -789,23 +795,50 @@ h1, h2, h3, h4, h5, h6, .nu-brand-font {
   animation: nu-toast-slide 0.25s ease-out;
 }
 
-.nu-toast-error { border-left-color: var(--nu-danger); }
-.nu-toast-success { border-left-color: var(--nu-success); }
-.nu-toast-warning { border-left-color: var(--nu-warning); }
+.nu-toast-error {
+  border-left-color: var(--nu-danger);
+}
+
+.nu-toast-success {
+  border-left-color: var(--nu-success);
+}
+
+.nu-toast-warning {
+  border-left-color: var(--nu-warning);
+}
 
 @keyframes nu-fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes nu-slide-up {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes nu-toast-slide {
-  from { opacity: 0; transform: translateX(24px); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 /* ==========================================================================

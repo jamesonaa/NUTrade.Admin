@@ -1260,12 +1260,12 @@ window.NUTradeFirebase = (function () {
             if (dbInstance) {
                 try {
                     console.warn("NUTrade: approveListing falling back to direct Firestore write.");
-                    await dbInstance.collection("listings").doc(listingId).update({
+                    await dbInstance.collection("listings").doc(listingId).set({
                         status: "active",
                         isVisible: true,
                         approvedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
                         approvedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
-                    });
+                    }, { merge: true });
                     console.log("NUTrade: approveListing direct write succeeded for", listingId);
                     return true;
                 } catch (writeErr) {
@@ -1318,13 +1318,14 @@ window.NUTradeFirebase = (function () {
                     const sellerUid = listingData.sellerUid || listingData.userId || listingData.uid;
                     const itemTitle = listingData.title || "Your listing";
 
-                    await docRef.update({
+                    const reasonStr = rejectionReason || "Does not comply with marketplace guidelines.";
+                    await docRef.set({
                         status: "rejected",
                         isVisible: false,
-                        rejectionReason: rejectionReason || "Does not comply with marketplace guidelines.",
+                        rejectionReason: reasonStr,
                         rejectedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
                         rejectedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
-                    });
+                    }, { merge: true });
 
                     // Push real-time notification to the student seller
                     if (sellerUid) {
@@ -1332,9 +1333,9 @@ window.NUTradeFirebase = (function () {
                             const notifPayload = {
                                 userId: sellerUid,
                                 recipientUid: sellerUid,
-                                title: "Listing Rejected ❌",
-                                body: "Your listing '" + itemTitle + "' was rejected. Reason: " + (rejectionReason || "Does not comply with marketplace guidelines."),
-                                message: "Your listing '" + itemTitle + "' was rejected. Reason: " + (rejectionReason || "Does not comply with marketplace guidelines."),
+                                title: "Listing Rejected",
+                                body: "Your listing '" + itemTitle + "' was rejected. Reason: " + reasonStr,
+                                message: "Your listing '" + itemTitle + "' was rejected. Reason: " + reasonStr,
                                 type: "listing_rejected",
                                 listingId: listingId,
                                 isRead: false,
