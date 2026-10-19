@@ -1,0 +1,354 @@
+@inject IFirestoreService FirestoreService
+
+@if (Listing != null)
+{
+    <div class="nu-modal-backdrop" @onclick="Close">
+        <div class="nu-modal-card" style="max-width: 920px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header">
+                <div style="min-width: 0;">
+                    <div style="font-size: 0.72rem; font-weight: 700; color: var(--nu-text-muted); text-transform: uppercase; letter-spacing: 0.04em;">
+                        Listing details
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; margin-top: 0.15rem;">
+                        <h3 style="font-size: 1.1rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0;">@Listing.Title</h3>
+                        <StatusBadge Status="@Listing.Status" />
+                        @if (Listing.IsPinned)
+                        {
+                            <span class="badge-pill badge-pill-gold">Pinned</span>
+                        }
+                    </div>
+                    <div class="nu-cell-sub nu-mono">ID: @Listing.Id</div>
+                </div>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="Close" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="nu-modal-body" style="display: flex; flex-direction: column; gap: 1.25rem;">
+                @* Photos *@
+                @if (Listing.Photos is { Count: > 0 } photos)
+                {
+                    var main = photos.Contains(_selectedPhoto ?? string.Empty) ? _selectedPhoto! : photos[0];
+                    <div class="nu-photo-viewer">
+                        <a href="@main" target="_blank" rel="noopener" title="Open full size">
+                            <img src="@main" alt="@Listing.Title" class="nu-photo-main" loading="lazy" />
+                        </a>
+                        @if (photos.Count > 1)
+                        {
+                            <div class="nu-photo-strip">
+                                @foreach (var url in photos)
+                                {
+                                    <img src="@url" alt="" loading="lazy"
+                                         class="nu-photo-thumb @(url == main ? "selected" : null)"
+                                         @onclick="() => _selectedPhoto = url" />
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="nu-thumb-placeholder" style="width: 100%; height: 120px; font-size: 0.82rem;">No photos uploaded</div>
+                }
+
+                @* Core details *@
+                <div class="nu-detail-grid">
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Seller</div>
+                        <div class="nu-detail-value">@SellerName</div>
+                        <div class="nu-cell-sub">@SellerEmail</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Category</div>
+                        <div class="nu-detail-value">@Listing.Category</div>
+                        @if (!string.IsNullOrWhiteSpace(Listing.Condition))
+                        {
+                            <div class="nu-cell-sub">Condition: @Listing.Condition</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Meetup zone</div>
+                        <div class="nu-detail-value">@(string.IsNullOrWhiteSpace(Listing.CampusZone) ? "—" : Listing.CampusZone)</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Starting bid</div>
+                        <div class="nu-detail-value nu-amount">₱@Listing.StartingPrice.ToString("N2")</div>
+                        <div class="nu-cell-sub">Reserve: ₱@Listing.ReservePrice.ToString("N2")</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Current highest bid</div>
+                        <div class="nu-detail-value nu-amount">₱@Listing.CurrentHighestBid.ToString("N2")</div>
+                        <div class="nu-cell-sub">@Listing.TotalBids bid@(Listing.TotalBids == 1 ? "" : "s") recorded on listing</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Auction</div>
+                        @if (Listing.AuctionEndsAt.HasValue)
+                        {
+                            <div class="nu-detail-value">@(Listing.IsExpired ? "Ended" : FormatRemaining(Listing.RemainingTime))</div>
+                            <div class="nu-cell-sub">@(Listing.IsExpired ? "Ended" : "Ends") @Fmt(Listing.AuctionEndsAt)</div>
+                        }
+                        else
+                        {
+                            <div class="nu-detail-value">Not started</div>
+                            <div class="nu-cell-sub">Clock is set when the listing is approved</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Package &amp; payment</div>
+                        <div class="nu-detail-value" style="display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
+                            <span>@Listing.PaidPackage</span>
+                            <span class="badge-pill @(Listing.PaymentLabel == "Paid" ? "badge-pill-success" : Listing.PaymentLabel == "Unpaid" ? "badge-pill-danger" : "badge-pill-muted")">@Listing.PaymentLabel</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(Listing.PayMongoIntentId) || !string.IsNullOrWhiteSpace(Listing.PaymentId))
+                        {
+                            <div class="nu-cell-sub nu-mono">Ref: @(string.IsNullOrWhiteSpace(Listing.PayMongoIntentId) ? Listing.PaymentId : Listing.PayMongoIntentId)</div>
+                        }
+                        @if (Listing.PaidAt.HasValue)
+                        {
+                            <div class="nu-cell-sub">Paid @Fmt(Listing.PaidAt)</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Submitted</div>
+                        <div class="nu-detail-value">@Fmt(Listing.CreatedAt)</div>
+                        @if (Listing.PublishedAt.HasValue)
+                        {
+                            <div class="nu-cell-sub">Published @Fmt(Listing.PublishedAt)</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Moderation</div>
+                        @if (Listing.ApprovedAt.HasValue)
+                        {
+                            <div class="nu-detail-value">Approved @Fmt(Listing.ApprovedAt)</div>
+                            @if (!string.IsNullOrWhiteSpace(Listing.ApprovedBy))
+                            {
+                                <div class="nu-cell-sub">by @Listing.ApprovedBy</div>
+                            }
+                        }
+                        else if (Listing.RejectedAt.HasValue || !string.IsNullOrWhiteSpace(Listing.RejectionReason))
+                        {
+                            <div class="nu-detail-value" style="color: var(--nu-danger);">Rejected @Fmt(Listing.RejectedAt)</div>
+                            @if (!string.IsNullOrWhiteSpace(Listing.RejectedBy))
+                            {
+                                <div class="nu-cell-sub">by @Listing.RejectedBy</div>
+                            }
+                        }
+                        else
+                        {
+                            <div class="nu-detail-value">No decision recorded</div>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(Listing.WinnerUid))
+                    {
+                        <div class="nu-detail-item">
+                            <div class="nu-detail-label">Awarded to</div>
+                            <div class="nu-detail-value">@UserName(Listing.WinnerUid)</div>
+                            <div class="nu-cell-sub nu-mono">@Listing.WinnerUid</div>
+                        </div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(Listing.RejectionReason))
+                {
+                    <div class="nu-callout" style="border-color: #F5C2C2; background: var(--nu-danger-bg);">
+                        <strong style="color: var(--nu-danger);">Rejection reason:</strong> @Listing.RejectionReason
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(Listing.Description))
+                {
+                    <div>
+                        <div class="nu-detail-label" style="margin-bottom: 0.3rem;">Description</div>
+                        <div style="font-size: 0.86rem; color: var(--nu-text-body); white-space: pre-line; line-height: 1.5;">@Listing.Description</div>
+                    </div>
+                }
+
+                @* Bid ladder *@
+                <div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap;">
+                        <div>
+                            <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.98rem;">Bid history</div>
+                            <div class="nu-cell-sub">listings/@Listing.Id/bids, highest first</div>
+                        </div>
+                        <button type="button" class="btn-nu-outline" style="font-size: 0.78rem; padding: 0.35rem 0.75rem;" @onclick="LoadBidsAsync" disabled="@_loadingBids">
+                            @(_loadingBids ? "Loading..." : "Reload")
+                        </button>
+                    </div>
+
+                    @if (_loadingBids)
+                    {
+                        <div class="nu-empty-state">Loading bid history...</div>
+                    }
+                    else if (_bidError != null)
+                    {
+                        <div class="login-error" style="margin: 0;">@_bidError</div>
+                    }
+                    else if (_bids.Count == 0)
+                    {
+                        <div class="nu-empty-state">No bids have been placed on this listing.</div>
+                    }
+                    else
+                    {
+                        var bidStatuses = _bids.Select(b => b.Status).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+                        var bidRows = _bids.Where(b => string.IsNullOrEmpty(_bidStatusFilter) || b.Status == _bidStatusFilter).ToList();
+                        var bidPage = _bidsPage.Slice(bidRows);
+                        if (bidStatuses.Count > 1)
+                        {
+                            <div style="display: flex; justify-content: flex-end; margin-bottom: 0.6rem;">
+                                <select class="nu-select" @bind="_bidStatusFilter" @bind:after="_bidsPage.Reset" aria-label="Filter bids by status">
+                                    <option value="">All bids (@_bids.Count)</option>
+                                    @foreach (var s in bidStatuses)
+                                    {
+                                        <option value="@s">@s.Replace('_', ' ')</option>
+                                    }
+                                </select>
+                            </div>
+                        }
+                        <div class="nu-table-container">
+                            <table class="nu-table" style="min-width: 560px;">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 48px;">#</th>
+                                        <th>Bidder</th>
+                                        <th>Amount</th>
+                                        <th>Status</th>
+                                        <th>Placed</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var bid in bidPage)
+                                    {
+                                        var rank = _bids.IndexOf(bid) + 1;
+                                        <tr>
+                                            <td class="nu-mono" style="color: var(--nu-text-muted);">@rank</td>
+                                            <td>
+                                                <div class="nu-cell-primary">@BidderName(bid)</div>
+                                                <div class="nu-cell-sub">@BidderEmail(bid)</div>
+                                            </td>
+                                            <td><span class="nu-amount">₱@bid.Amount.ToString("N2")</span></td>
+                                            <td>
+                                                @if (string.IsNullOrWhiteSpace(bid.Status))
+                                                {
+                                                    <span class="nu-cell-sub">—</span>
+                                                }
+                                                else
+                                                {
+                                                    <StatusBadge Status="@bid.Status" Kind="bid" />
+                                                }
+                                            </td>
+                                            <td class="nu-cell-sub">@Fmt(bid.Timestamp)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                        <Pager State="_bidsPage" TotalCount="bidRows.Count" Changed="StateHasChanged" />
+                    }
+                </div>
+            </div>
+
+            <div class="nu-modal-footer">
+                @if (FooterContent != null)
+                {
+                    @FooterContent
+                }
+                <button type="button" class="btn-nu-navy" @onclick="Close">Close</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public MarketplaceListing? Listing { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public RenderFragment? FooterContent { get; set; }
+
+    private string? _loadedListingId;
+    private string? _selectedPhoto;
+    private bool _loadingBids;
+    private string? _bidError;
+    private List<BidItem> _bids = new();
+    private string _bidStatusFilter = string.Empty;
+    private readonly PageState _bidsPage = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Listing == null)
+        {
+            _loadedListingId = null;
+            _bids.Clear();
+            _bidError = null;
+            return;
+        }
+
+        if (Listing.Id != _loadedListingId)
+        {
+            _loadedListingId = Listing.Id;
+            _selectedPhoto = null;
+            _bidStatusFilter = string.Empty;
+            _bidsPage.Reset();
+            await LoadBidsAsync();
+        }
+    }
+
+    private async Task LoadBidsAsync()
+    {
+        if (Listing == null) return;
+        _loadingBids = true;
+        _bidError = null;
+        StateHasChanged();
+
+        var result = await FirestoreService.TryGetListingBidsAsync(Listing.Id);
+        _bids = result.Bids;
+        _bidError = result.Success ? null : result.Error;
+        _loadingBids = false;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private UserProfile? FindUser(string uid) =>
+        string.IsNullOrWhiteSpace(uid)
+            ? null
+            : FirestoreService.AllUsers.FirstOrDefault(u => string.Equals(u.Uid, uid, StringComparison.OrdinalIgnoreCase));
+
+    private static string NameOf(UserProfile u)
+    {
+        var full = $"{u.FirstName} {u.LastName}".Trim();
+        if (!string.IsNullOrWhiteSpace(full)) return full;
+        if (!string.IsNullOrWhiteSpace(u.DisplayName)) return u.DisplayName;
+        return string.IsNullOrWhiteSpace(u.Email) ? u.Uid : u.Email;
+    }
+
+    private string UserName(string uid) => FindUser(uid) is { } u ? NameOf(u) : ShortUid(uid);
+
+    private string SellerName =>
+        FindUser(Listing!.SellerUid) is { } u ? NameOf(u)
+        : !string.IsNullOrWhiteSpace(Listing.SellerName) ? Listing.SellerName
+        : ShortUid(Listing.SellerUid);
+
+    private string SellerEmail =>
+        FindUser(Listing!.SellerUid)?.Email is { Length: > 0 } email ? email
+        : string.IsNullOrWhiteSpace(Listing.SellerEmail) ? "No email on record" : Listing.SellerEmail;
+
+    private string BidderName(BidItem bid) =>
+        !string.IsNullOrWhiteSpace(bid.BidderName) ? bid.BidderName
+        : FindUser(bid.BidderUid) is { } u ? NameOf(u)
+        : ShortUid(bid.BidderUid);
+
+    private string BidderEmail(BidItem bid) =>
+        !string.IsNullOrWhiteSpace(bid.BidderEmail) ? bid.BidderEmail
+        : FindUser(bid.BidderUid)?.Email is { Length: > 0 } email ? email
+        : bid.BidderUid;
+
+    private static string ShortUid(string uid) =>
+        string.IsNullOrWhiteSpace(uid) ? "Unknown" : uid.Length <= 12 ? uid : $"{uid[..12]}…";
+
+    private static string Fmt(DateTime? value) =>
+        value.HasValue ? value.Value.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt") : "—";
+
+    private static string FormatRemaining(TimeSpan ts)
+    {
+        if (ts <= TimeSpan.Zero) return "Ended";
+        if (ts.TotalHours >= 24) return $"{(int)ts.TotalDays}d {ts.Hours}h left";
+        return $"{ts.Hours}h {ts.Minutes}m left";
+    }
+}

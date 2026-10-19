@@ -2,6 +2,7 @@
 @inject IFirestoreService FirestoreService
 @inject IFirebaseAuthService AuthService
 @inject NavigationManager NavigationManager
+@inject ToastService ToastService
 @implements IDisposable
 
 <PageTitle>Users Management | NUTrade Admin</PageTitle>
@@ -19,123 +20,443 @@
                 </svg>
             </div>
             <div>
-                <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
-                    <span class="badge-pill badge-pill-gold">View Only</span>
-                </div>
                 <h1 style="font-size: 1.35rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0 0 0.25rem;">
                     Users Management
                 </h1>
-                <p style="font-size: 0.85rem; color: var(--nu-text-muted); margin: 0; max-width: 520px; line-height: 1.45;">
-                    View the list of all registered users in NUTrade, including their verification statuses.
+                <p style="font-size: 0.85rem; color: var(--nu-text-muted); margin: 0; max-width: 560px; line-height: 1.45;">
+                    Every account registered through the student app. Students verify themselves with the emailed code;
+                    admins can revoke or restore that verification here, which controls whether they can post and bid.
                 </p>
             </div>
         </div>
 
         <div class="vu-stats">
             <div class="vu-stat-chip">
-                <span><strong>@FirestoreService.AllUsers.Count</strong> total users</span>
+                <span><strong>@FirestoreService.AllUsers.Count</strong> total</span>
+            </div>
+            <div class="vu-stat-chip">
+                <span><strong>@FirestoreService.AllUsers.Count(u => EffectiveStatus(u) == "verified")</strong> verified</span>
+            </div>
+            <div class="vu-stat-chip">
+                <span><strong>@FirestoreService.AllUsers.Count(u => EffectiveStatus(u) != "verified")</strong> not verified</span>
             </div>
         </div>
     </div>
 
+    @if (!string.IsNullOrWhiteSpace(FirestoreService.LastListenerError))
+    {
+        <div class="nu-inline-error">@FirestoreService.LastListenerError</div>
+    }
+
     <div class="nu-card">
         @{
             var rows = FilteredUsers.ToList();
+            var pageRows = _usersPage.Slice(rows);
         }
         <div class="vu-toolbar">
-            <div class="vu-search">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
-                    <circle cx="11" cy="11" r="8"/>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                <input type="text"
-                       class="nu-input"
-                       placeholder="Search by name or email..."
-                       @bind="_searchFilter"
-                       @bind:event="oninput" />
+            <div class="nu-toolbar-group" style="flex: 1;">
+                <div class="vu-search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input type="text"
+                           class="nu-input"
+                           placeholder="Search by name, email, or UID..."
+                           @bind="_searchFilter"
+                           @bind:event="oninput"
+                           @bind:after="_usersPage.Reset" />
+                </div>
+
+                <select class="nu-select" @bind="_statusFilter" @bind:after="_usersPage.Reset" aria-label="Filter by verification status">
+                    <option value="">All statuses</option>
+                    @foreach (var status in StatusOptions)
+                    {
+                        <option value="@(status.Length == 0 ? NotRecorded : status)">@StatusOptionLabel(status)</option>
+                    }
+                </select>
+
+                <select class="nu-select" @bind="_roleFilter" @bind:after="_usersPage.Reset" aria-label="Filter by role">
+                    <option value="">All roles</option>
+                    <option value="student">Students</option>
+                    <option value="admin">Admins</option>
+                </select>
+
+                <select class="nu-select" @bind="_activityFilter" @bind:after="_usersPage.Reset" aria-label="Filter by last marketplace activity" title="@ActivityHelp">
+                    <option value="">Any last activity</option>
+                    <option value="7">Activity in last 7 days</option>
+                    <option value="30">Activity in last 30 days</option>
+                    <option value="stale30">No activity in 30+ days</option>
+                </select>
             </div>
             <div class="vu-sort-hint">
-                @if (!string.IsNullOrWhiteSpace(_searchFilter))
-                {
-                    <span>@rows.Count result@(rows.Count == 1 ? "" : "s")</span>
-                    <span style="opacity: 0.4;">·</span>
-                }
-                <span>Sorted by newest registration date</span>
+                <span>@rows.Count of @FirestoreService.AllUsers.Count shown</span>
+                <span style="opacity: 0.4;">·</span>
+                <select class="nu-select" @bind="_sortOrder" @bind:after="_usersPage.Reset" aria-label="Sort users">
+                    <option value="joined">Newest accounts</option>
+                    <option value="activity">Most recent activity</option>
+                </select>
             </div>
         </div>
 
-        @if (rows.Count > 0)
+        @if (!FirestoreService.UsersLoaded)
+        {
+            <div class="nu-empty-state">Loading users from Firestore...</div>
+        }
+        else if (rows.Count > 0)
         {
             <div class="vu-list">
-                @foreach (var student in rows)
+                @foreach (var user in pageRows)
                 {
+                    var status = EffectiveStatus(user);
+                    var listingCount = ListingCountFor(user.Uid);
+                    var activity = LastActivity(user.Uid);
                     <div class="vu-row">
                         <div class="vu-student">
                             <div class="vu-avatar">
-                                @(student.DisplayName?.Length > 0 ? student.DisplayName[0].ToString().ToUpper() : "?")
+                                @(user.DisplayName?.Length > 0 ? user.DisplayName[0].ToString().ToUpper() : "?")
                             </div>
                             <div style="min-width: 0;">
-                                <div class="vu-name">@student.DisplayName</div>
-                                <div style="font-size: 0.78rem; color: var(--nu-text-muted); font-weight: 500; margin-top: 2px; display: flex; align-items: center; gap: 0.35rem;">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-                                        <path d="M6 12v5c3 3 9 3 12 0v-5"/>
-                                    </svg>
-                                    <span>@student.FormattedProgram</span>
+                                <div class="vu-name">@user.DisplayName</div>
+                                <div style="font-size: 0.76rem; color: var(--nu-text-muted); font-weight: 500; margin-top: 2px;">
+                                    @user.FormattedProgram
                                 </div>
                             </div>
                         </div>
 
-                        <div class="vu-email" title="@student.Email">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <rect width="20" height="16" x="2" y="4" rx="2"/>
-                                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
-                            </svg>
-                            <span style="overflow: hidden; text-overflow: ellipsis;">@student.Email</span>
+                        <div style="min-width: 0; display: flex; flex-direction: column; gap: 0.3rem;">
+                            <div class="vu-email" title="@user.Email">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect width="20" height="16" x="2" y="4" rx="2"/>
+                                    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>
+                                </svg>
+                                <span style="overflow: hidden; text-overflow: ellipsis;">@(string.IsNullOrWhiteSpace(user.Email) ? "No email on profile" : user.Email)</span>
+                            </div>
+                            <div class="nu-cell-sub">
+                                @listingCount listing@(listingCount == 1 ? "" : "s") ·
+                                Joined @(user.CreatedAt.HasValue ? user.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "date not recorded")
+                            </div>
+                            <div class="nu-cell-sub" title="@(activity != null ? $"{activity.At.ToLocalTime():MMM dd, yyyy · hh:mm tt}. {ActivityHelp}" : ActivityHelp)">
+                                @if (activity != null)
+                                {
+                                    <span>Last activity: @activity.Label · @FormatRelative(activity.At)</span>
+                                }
+                                else
+                                {
+                                    <span>Last activity: not recorded</span>
+                                }
+                            </div>
                         </div>
 
-                        <div class="vu-time" style="width: 200px; display: flex; flex-direction: column; align-items: flex-end;">
-                            <div style="font-size: 0.8rem; font-weight: 600; text-transform: capitalize; color: @GetStatusColor(student.VerificationStatus)">
-                                @(string.IsNullOrEmpty(student.VerificationStatus) ? "Unknown" : student.VerificationStatus)
-                            </div>
-                            <div style="font-size: 0.76rem; color: var(--nu-text-muted); margin-top: 0.2rem; display: flex; align-items: center; gap: 0.3rem;">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <polyline points="12 6 12 12 16 14"/>
-                                </svg>
-                                <span>@student.CreatedAt.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt")</span>
-                            </div>
+                        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem;">
+                            <StatusBadge Status="@status" Kind="verification" />
+                            @if (user.IsAdmin)
+                            {
+                                <span class="badge-pill badge-pill-navy">Admin</span>
+                            }
+                        </div>
+
+                        <div class="vu-actions">
+                            <button type="button" class="btn-nu-outline" style="font-size: 0.78rem; padding: 0.45rem 0.8rem;" @onclick="() => OpenUserDetail(user)">
+                                Details
+                            </button>
+                            @if (CanManageVerification(user))
+                            {
+                                @if (status == "verified")
+                                {
+                                    <button type="button" class="btn-nu-danger" disabled="@(_processingUid == user.Uid)" @onclick="() => PromptVerificationChange(user, false)">
+                                        Revoke
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="btn-nu-success" disabled="@(_processingUid == user.Uid)" @onclick="() => PromptVerificationChange(user, true)">
+                                        Restore
+                                    </button>
+                                }
+                            }
                         </div>
                     </div>
                 }
             </div>
+            <Pager State="_usersPage" TotalCount="rows.Count" Changed="StateHasChanged" />
         }
         else
         {
             <div class="vu-empty">
-                <div class="vu-empty-icon">
+                <div class="vu-empty-icon" style="background: #F5F7FA; border-color: var(--nu-card-border); color: var(--nu-text-muted);">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="9" cy="7" r="4"/>
                         <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
                     </svg>
                 </div>
-                @if (string.IsNullOrWhiteSpace(_searchFilter))
+                @if (FirestoreService.AllUsers.Count == 0)
                 {
                     <h3>No users found</h3>
-                    <p>There are no registered users in the database.</p>
+                    <p>No accounts have been registered yet.</p>
                 }
                 else
                 {
                     <h3>No matches</h3>
-                    <p>Nothing found for “@_searchFilter”.</p>
+                    <p>No users match the current search and filters.</p>
                 }
             </div>
         }
     </div>
 </div>
 
+@* USER DETAIL *@
+@if (_detailUser != null)
+{
+    var user = FirestoreService.AllUsers.FirstOrDefault(u => u.Uid == _detailUser.Uid) ?? _detailUser;
+    var listings = ListingsFor(user.Uid);
+    <div class="nu-modal-backdrop" @onclick="() => _detailUser = null">
+        <div class="nu-modal-card" style="max-width: 820px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header">
+                <div class="vu-modal-student">
+                    <div class="vu-modal-avatar">@(user.DisplayName.Length > 0 ? user.DisplayName[0].ToString().ToUpper() : "?")</div>
+                    <div>
+                        <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0;">@user.DisplayName</h3>
+                        <div style="font-size: 0.8rem; color: var(--nu-text-muted);">@user.Email</div>
+                    </div>
+                </div>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="() => _detailUser = null" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="nu-modal-body" style="display: flex; flex-direction: column; gap: 1.1rem;">
+                <div class="nu-detail-grid">
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Verification</div>
+                        <div class="nu-detail-value"><StatusBadge Status="@EffectiveStatus(user)" Kind="verification" /></div>
+                        @if (!string.IsNullOrWhiteSpace(user.VerificationReason))
+                        {
+                            <div class="nu-cell-sub">Reason: @user.VerificationReason</div>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(user.RejectionReason))
+                        {
+                            <div class="nu-cell-sub">Reason: @user.RejectionReason</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Verified at</div>
+                        <div class="nu-detail-value">@(user.VerifiedAt.HasValue ? user.VerifiedAt.Value.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt") : "Not recorded")</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Reviewed by</div>
+                        <div class="nu-detail-value nu-mono" style="font-size: 0.8rem;">@(string.IsNullOrWhiteSpace(user.ReviewedBy) ? "Not recorded" : user.ReviewedBy)</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Role</div>
+                        <div class="nu-detail-value" style="text-transform: capitalize;">@user.Role</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Joined</div>
+                        <div class="nu-detail-value">@(user.CreatedAt.HasValue ? user.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt") : "Not recorded")</div>
+                    </div>
+                    <div class="nu-detail-item">
+                        <div class="nu-detail-label">Program</div>
+                        <div class="nu-detail-value">@user.FormattedProgram</div>
+                    </div>
+                    <div class="nu-detail-item" style="grid-column: span 2;" title="@ActivityHelp">
+                        <div class="nu-detail-label">Last marketplace activity</div>
+                        @{ var detailActivity = LastActivity(user.Uid); }
+                        @if (detailActivity != null)
+                        {
+                            <div class="nu-detail-value">@detailActivity.Label · @detailActivity.At.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt")</div>
+                            <div class="nu-cell-sub">@FormatRelative(detailActivity.At). Based on account creation, listings and listing-fee payments; not an online status.</div>
+                        }
+                        else
+                        {
+                            <div class="nu-detail-value">Not recorded</div>
+                        }
+                    </div>
+                    <div class="nu-detail-item" style="grid-column: span 2;">
+                        <div class="nu-detail-label">User ID</div>
+                        <div class="nu-detail-value nu-mono" style="font-size: 0.8rem;">@user.Uid</div>
+                    </div>
+                </div>
+
+                <div>
+                    @{
+                        var listingStatuses = listings.Select(l => l.Status).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+                        var shownListings = listings.Where(l => string.IsNullOrEmpty(_detailListingStatus) || l.Status == _detailListingStatus).ToList();
+                        var listingPage = _detailListingsPage.Slice(shownListings);
+                    }
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+                        <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.98rem;">
+                            Listings by this user (@listings.Count)
+                        </div>
+                        @if (listings.Count > 0)
+                        {
+                            <select class="nu-select" @bind="_detailListingStatus" @bind:after="_detailListingsPage.Reset" aria-label="Filter this user's listings by status">
+                                <option value="">All statuses</option>
+                                @foreach (var s in listingStatuses)
+                                {
+                                    <option value="@s">@s.Replace('_', ' ')</option>
+                                }
+                            </select>
+                        }
+                    </div>
+                    @if (listings.Count == 0)
+                    {
+                        <div class="nu-empty-state" style="padding: 1.25rem;">This user has not created any listings.</div>
+                    }
+                    else if (shownListings.Count == 0)
+                    {
+                        <div class="nu-empty-state" style="padding: 1.25rem;">No listings with this status.</div>
+                    }
+                    else
+                    {
+                        <div class="nu-table-container">
+                            <table class="nu-table" style="min-width: 560px;">
+                                <thead>
+                                    <tr>
+                                        <th>Listing</th>
+                                        <th>Status</th>
+                                        <th>Bids / Highest</th>
+                                        <th>Created</th>
+                                        <th style="text-align: right;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var listing in listingPage)
+                                    {
+                                        <tr>
+                                            <td class="nu-cell-primary">@listing.Title</td>
+                                            <td><StatusBadge Status="@listing.Status" /></td>
+                                            <td>
+                                                <span class="nu-amount">₱@listing.CurrentHighestBid.ToString("N2")</span>
+                                                <div class="nu-cell-sub">@listing.TotalBids bid@(listing.TotalBids == 1 ? "" : "s")</div>
+                                            </td>
+                                            <td class="nu-cell-sub">@(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "—")</td>
+                                            <td style="text-align: right;">
+                                                <button type="button" class="btn-nu-outline" style="font-size: 0.74rem; padding: 0.35rem 0.65rem;" @onclick="() => _detailListing = listing">
+                                                    View
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                        <Pager State="_detailListingsPage" TotalCount="shownListings.Count" Changed="StateHasChanged" />
+                    }
+                </div>
+            </div>
+
+            <div class="nu-modal-footer">
+                @if (CanManageVerification(user))
+                {
+                    @if (EffectiveStatus(user) == "verified")
+                    {
+                        <button type="button" class="btn-nu-danger" @onclick="() => PromptVerificationChange(user, false)">Revoke verification</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn-nu-success" @onclick="() => PromptVerificationChange(user, true)">Restore verification</button>
+                    }
+                }
+                <button type="button" class="btn-nu-navy" @onclick="() => _detailUser = null">Close</button>
+            </div>
+        </div>
+    </div>
+}
+
+<ListingDetailModal Listing="_detailListing" OnClose="() => _detailListing = null" />
+
+@* VERIFICATION CONFIRMATION *@
+@if (_verificationTarget != null)
+{
+    <div class="nu-modal-backdrop" @onclick="CancelVerificationChange">
+        <div class="nu-modal-card" style="max-width: 480px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header" style="background: @(_verificationGrant ? "var(--nu-success-bg)" : "var(--nu-danger-bg)");">
+                <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0; color: @(_verificationGrant ? "var(--nu-success)" : "var(--nu-danger)");">
+                    @(_verificationGrant ? "Restore verification" : "Revoke verification")
+                </h3>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="CancelVerificationChange" disabled="@_isSubmitting">&times;</button>
+            </div>
+            <div class="nu-modal-body">
+                <p style="font-size: 0.9rem; color: var(--nu-text-body); margin: 0 0 0.8rem;">
+                    @(_verificationGrant ? "Restore" : "Revoke") verification for <strong>@_verificationTarget.DisplayName</strong> (@_verificationTarget.Email)?
+                </p>
+                <div class="nu-callout">
+                    @if (_verificationGrant)
+                    {
+                        <span>This grants the <code class="nu-mono">verified</code> claim again through the <code class="nu-mono">setUserVerification</code> Cloud Function. The student can post and bid again once their app refreshes its token.</span>
+                    }
+                    else
+                    {
+                        <span>This removes the <code class="nu-mono">verified</code> claim through the <code class="nu-mono">setUserVerification</code> Cloud Function. The student keeps their account and existing listings but cannot post or bid until verification is restored.</span>
+                    }
+                </div>
+                @if (!_verificationGrant)
+                {
+                    <label class="nu-detail-label" for="verification-reason" style="display: block; margin-top: 0.9rem;">Reason (optional)</label>
+                    <textarea id="verification-reason"
+                              class="nu-input"
+                              rows="3"
+                              maxlength="500"
+                              style="width: 100%; resize: vertical;"
+                              disabled="@_isSubmitting"
+                              @bind="_verificationReason"></textarea>
+                }
+            </div>
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="CancelVerificationChange" disabled="@_isSubmitting">Cancel</button>
+                <button type="button"
+                        class="@(_verificationGrant ? "btn-nu-success" : "btn-nu-danger")"
+                        style="@(_verificationGrant ? "" : "background: var(--nu-danger); color: white; border-color: var(--nu-danger);")"
+                        disabled="@_isSubmitting"
+                        @onclick="ConfirmVerificationChange">
+                    @(_isSubmitting ? "Working..." : _verificationGrant ? "Restore verification" : "Revoke verification")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private string _searchFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _roleFilter = string.Empty;
+    private const string NotRecorded = "__not_recorded";
+    private UserProfile? _detailUser;
+    private MarketplaceListing? _detailListing;
+
+    private readonly PageState _usersPage = new();
+    private readonly PageState _detailListingsPage = new(5);
+    private string _detailListingStatus = string.Empty;
+    private string _activityFilter = string.Empty;
+    private string _sortOrder = "joined";
+
+    private UserProfile? _verificationTarget;
+    private bool _verificationGrant;
+    private string _verificationReason = string.Empty;
+    private bool _isSubmitting;
+    private string? _processingUid;
+
+    // Outcome of setUserVerification calls made this session. The claim itself is not
+    // readable from the browser, and the function may not mirror it onto users/{uid}.
+    private readonly Dictionary<string, bool> _verificationOverrides = new();
+
+    private string EffectiveStatus(UserProfile user)
+    {
+        if (_verificationOverrides.TryGetValue(user.Uid, out var verified))
+            return verified ? "verified" : "revoked";
+        return user.EffectiveVerificationStatus;
+    }
+
+    private bool CanManageVerification(UserProfile user) =>
+        !user.IsAdmin && !string.Equals(user.Uid, AuthService.CurrentUser?.Uid, StringComparison.Ordinal);
+
+    private IEnumerable<string> StatusOptions =>
+        FirestoreService.AllUsers.Select(EffectiveStatus).Distinct().OrderBy(s => s);
+
+    private static string StatusOptionLabel(string status) => status switch
+    {
+        "" => "Not recorded",
+        _ => char.ToUpperInvariant(status[0]) + status[1..].Replace('_', ' ')
+    };
 
     private IEnumerable<UserProfile> FilteredUsers
     {
@@ -145,14 +466,93 @@
 
             if (!string.IsNullOrWhiteSpace(_searchFilter))
             {
+                var k = _searchFilter.Trim();
                 query = query.Where(u =>
-                    (u.DisplayName != null && u.DisplayName.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)) ||
-                    (u.Email != null && u.Email.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase)));
+                    (u.DisplayName ?? string.Empty).Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                    (u.Email ?? string.Empty).Contains(k, StringComparison.OrdinalIgnoreCase) ||
+                    u.Uid.Contains(k, StringComparison.OrdinalIgnoreCase));
             }
 
-            return query.OrderByDescending(u => u.CreatedAt);
+            if (_statusFilter.Length > 0)
+            {
+                var wanted = _statusFilter == NotRecorded ? string.Empty : _statusFilter;
+                query = query.Where(u => EffectiveStatus(u) == wanted);
+            }
+
+            if (_roleFilter == "admin") query = query.Where(u => u.IsAdmin);
+            else if (_roleFilter == "student") query = query.Where(u => !u.IsAdmin);
+
+            if (_activityFilter.Length > 0)
+            {
+                var stale = _activityFilter.StartsWith("stale", StringComparison.Ordinal);
+                var days = int.Parse(stale ? _activityFilter[5..] : _activityFilter);
+                var cutoff = DateTime.UtcNow.AddDays(-days);
+                query = query.Where(u =>
+                {
+                    var at = LastActivity(u.Uid)?.At.ToUniversalTime();
+                    return stale ? at == null || at < cutoff : at >= cutoff;
+                });
+            }
+
+            return _sortOrder == "activity"
+                ? query.OrderByDescending(u => LastActivity(u.Uid)?.At.ToUniversalTime() ?? DateTime.MinValue)
+                : query.OrderByDescending(u => u.CreatedAt ?? DateTime.MinValue);
         }
     }
+
+    private const string ActivityHelp =
+        "Latest recorded action: account created, listing posted, or listing-fee payment. Not an online status; the student app does not report when it is open.";
+
+    private sealed record Activity(DateTime At, string Label);
+
+    // Built from the users, listings and payments listeners already running, so it costs no extra reads.
+    private Dictionary<string, Activity>? _activityIndex;
+
+    private Activity? LastActivity(string uid)
+    {
+        _activityIndex ??= BuildActivityIndex();
+        return !string.IsNullOrWhiteSpace(uid) && _activityIndex.TryGetValue(uid, out var activity) ? activity : null;
+    }
+
+    private Dictionary<string, Activity> BuildActivityIndex()
+    {
+        var index = new Dictionary<string, Activity>(StringComparer.OrdinalIgnoreCase);
+
+        void Consider(string? uid, DateTime? at, string label)
+        {
+            if (string.IsNullOrWhiteSpace(uid) || !at.HasValue) return;
+            if (!index.TryGetValue(uid, out var current) || at.Value.ToUniversalTime() > current.At.ToUniversalTime())
+                index[uid] = new Activity(at.Value, label);
+        }
+
+        foreach (var user in FirestoreService.AllUsers)
+            Consider(user.Uid, user.CreatedAt, "Created account");
+        foreach (var listing in FirestoreService.AllListings)
+            Consider(listing.SellerUid, listing.CreatedAt, "Posted a listing");
+        foreach (var payment in FirestoreService.Transactions)
+            Consider(payment.UserId, payment.Timestamp, payment.IsPaid ? "Paid a listing fee" : "Started a listing-fee payment");
+
+        return index;
+    }
+
+    private static string FormatRelative(DateTime at)
+    {
+        var elapsed = DateTime.UtcNow - at.ToUniversalTime();
+        if (elapsed < TimeSpan.FromMinutes(1)) return "just now";
+        if (elapsed < TimeSpan.FromHours(1)) return $"{(int)elapsed.TotalMinutes} min ago";
+        if (elapsed < TimeSpan.FromDays(1)) return $"{(int)elapsed.TotalHours} hr ago";
+        if (elapsed < TimeSpan.FromDays(30)) return $"{(int)elapsed.TotalDays} day{((int)elapsed.TotalDays == 1 ? "" : "s")} ago";
+        return at.ToLocalTime().ToString("MMM dd, yyyy");
+    }
+
+    private int ListingCountFor(string uid) =>
+        FirestoreService.AllListings.Count(l => string.Equals(l.SellerUid, uid, StringComparison.OrdinalIgnoreCase));
+
+    private List<MarketplaceListing> ListingsFor(string uid) =>
+        FirestoreService.AllListings
+            .Where(l => string.Equals(l.SellerUid, uid, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(l => l.CreatedAt ?? DateTime.MinValue)
+            .ToList();
 
     protected override async Task OnInitializedAsync()
     {
@@ -171,30 +571,82 @@
         }
 
         FirestoreService.OnAllUsersUpdated += HandleUpdate;
+        FirestoreService.OnAllListingsUpdated += HandleUpdate;
+        FirestoreService.OnTransactionsUpdated += HandleUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }
 
-    private void HandleUpdate() => InvokeAsync(StateHasChanged);
-
-    private static string TruncateUid(string uid)
+    private void HandleUpdate()
     {
-        if (string.IsNullOrEmpty(uid)) return "—";
-        return uid.Length <= 16 ? uid : $"{uid[..16]}…";
+        _activityIndex = null;
+        InvokeAsync(StateHasChanged);
     }
 
-    private string GetStatusColor(string? status)
+    private void OpenUserDetail(UserProfile user)
     {
-        return status?.ToLowerInvariant() switch
+        _detailUser = user;
+        _detailListingStatus = string.Empty;
+        _detailListingsPage.Reset();
+    }
+
+    private void PromptVerificationChange(UserProfile user, bool grant)
+    {
+        _verificationTarget = user;
+        _verificationGrant = grant;
+        _verificationReason = string.Empty;
+    }
+
+    private void CancelVerificationChange()
+    {
+        if (_isSubmitting) return;
+        _verificationTarget = null;
+    }
+
+    private async Task ConfirmVerificationChange()
+    {
+        if (_verificationTarget == null) return;
+
+        var target = _verificationTarget;
+        var grant = _verificationGrant;
+        _isSubmitting = true;
+        _processingUid = target.Uid;
+
+        try
         {
-            "verified" => "var(--nu-success)",
-            "pending" => "var(--nu-warning)",
-            "rejected" => "var(--nu-danger)",
-            _ => "var(--nu-text-muted)"
-        };
+            var result = await FirestoreService.SetUserVerificationAsync(target.Uid, grant, grant ? null : _verificationReason);
+            if (result.Success)
+            {
+                _verificationOverrides[target.Uid] = grant;
+                _verificationTarget = null;
+                ToastService.ShowSuccess(
+                    grant
+                        ? $"Verification restored for {target.DisplayName}."
+                        : $"Verification revoked for {target.DisplayName}. They can no longer post or bid.",
+                    grant ? "Verification Restored" : "Verification Revoked");
+            }
+            else
+            {
+                var reason = result.ErrorCode switch
+                {
+                    "permission-denied" => "This account lacks the admin custom claim.",
+                    "not-found" => "setUserVerification is not deployed, or the user no longer exists.",
+                    "invalid-argument" => $"The function rejected the request: {result.ErrorMessage}",
+                    _ => result.ErrorMessage ?? "Unknown error."
+                };
+                ToastService.ShowError(reason, "Verification Change Failed");
+            }
+        }
+        finally
+        {
+            _isSubmitting = false;
+            _processingUid = null;
+        }
     }
 
     public void Dispose()
     {
         FirestoreService.OnAllUsersUpdated -= HandleUpdate;
+        FirestoreService.OnAllListingsUpdated -= HandleUpdate;
+        FirestoreService.OnTransactionsUpdated -= HandleUpdate;
     }
 }

@@ -1,0 +1,52 @@
+@* Renders a listing, bid, payment or verification status exactly as stored,
+   with a readable label for the states the app is known to write. *@
+
+<span class="badge-pill @CssClass" title="@Value">@Label</span>
+
+@code {
+    [Parameter] public string? Status { get; set; }
+    [Parameter] public string Kind { get; set; } = "listing"; // listing | bid | payment | verification
+
+    private string Value => (Status ?? string.Empty).Trim();
+    private string Key => Value.ToLowerInvariant();
+
+    private string Label => Key switch
+    {
+        "" => Kind == "verification" ? "Not recorded" : "No status",
+        "active" or "approved" or "published" => "Live",
+        "pending_approval" or "pending" => Kind == "listing" ? "Pending approval" : "Pending",
+        "pending_payment" or "awaiting_payment" => "Awaiting payment",
+        "pending_meetup" => "Awaiting meetup",
+        "draft" => "Draft",
+        "rejected" => "Rejected",
+        "unpublished" => "Unpublished",
+        "deleted" => "Deleted",
+        "sold" => "Sold",
+        "completed" or "complete" => "Completed",
+        "expired" => "Expired",
+        "paid" or "succeeded" or "settled" or "captured" => "Paid",
+        "failed" => "Failed",
+        "refunded" => "Refunded",
+        "verified" => "Verified",
+        "unverified" => "Unverified",
+        "revoked" => "Revoked",
+        _ => Humanize(Value)
+    };
+
+    private string CssClass => Key switch
+    {
+        "active" or "approved" or "published" or "paid" or "succeeded" or "settled"
+            or "captured" or "verified" or "completed" or "complete" or "sold" => "badge-pill-success",
+        "pending_approval" or "pending" or "pending_meetup" => "badge-pill-gold",
+        "pending_payment" or "awaiting_payment" or "unverified" => "badge-pill-warning",
+        "rejected" or "failed" or "revoked" or "declined" => "badge-pill-danger",
+        "unpublished" or "deleted" or "expired" or "withdrawn" or "refunded" or "" => "badge-pill-muted",
+        _ => "badge-pill-navy"
+    };
+
+    private static string Humanize(string raw)
+    {
+        var text = raw.Replace('_', ' ').Replace('-', ' ').Trim();
+        return text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
+    }
+}

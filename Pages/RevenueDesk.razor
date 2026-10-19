@@ -1,0 +1,792 @@
+@page "/admin/revenue"
+@inject IFirestoreService FirestoreService
+@inject IFirebaseAuthService AuthService
+@inject NavigationManager NavigationManager
+@inject ToastService ToastService
+@implements IAsyncDisposable
+
+<PageTitle>Revenue Desk | NUTrade Admin</PageTitle>
+
+<div class="dash-stack">
+
+    <div class="page-header">
+        <div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; flex-wrap: wrap;">
+                <span class="badge-pill badge-pill-navy">Revenue Desk</span>
+            </div>
+            <h1>Revenue Desk</h1>
+            <p>
+                Listing-fee revenue, forfeited bid deposits, payout requests and deposit disputes, read live from Firestore.
+                Payout and dispute decisions run through the app's Cloud Functions.
+            </p>
+        </div>
+        @if (Counter.UpdatedAt.HasValue)
+        {
+            <div class="page-header-meta">
+                <span class="badge-pill badge-pill-navy">Counter updated @FormatDate(Counter.UpdatedAt)</span>
+            </div>
+        }
+    </div>
+
+    @foreach (var error in FirestoreService.RevenueDeskErrors)
+    {
+        <div class="nu-inline-error">@SourceLabel(error.Key): @error.Value</div>
+    }
+
+    <div class="dash-stats">
+        <div class="nu-card dash-stat-card">
+            <div class="dash-stat-label">
+                <span>Listing-Fee Revenue</span>
+                <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Gross</span>
+            </div>
+            <div class="dash-stat-value">@CounterValue(Counter.GrossPesos)</div>
+            <div class="dash-stat-hint">@CounterHint($"{Counter.TransactionCount:N0} transaction{(Counter.TransactionCount == 1 ? "" : "s")} counted")</div>
+        </div>
+
+        <div class="nu-card dash-stat-card">
+            <div class="dash-stat-label">
+                <span>Forfeited Deposits</span>
+                <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Bid deposits</span>
+            </div>
+            <div class="dash-stat-value">@CounterValue(Counter.ForfeitedDepositsPesos)</div>
+            <div class="dash-stat-hint">
+                @(FirestoreService.ForfeitedDepositsLoaded
+                    ? $"{FirestoreService.ForfeitedDeposits.Count:N0} forfeited deposit record{(FirestoreService.ForfeitedDeposits.Count == 1 ? "" : "s")}"
+                    : "Loading deposits...")
+            </div>
+        </div>
+
+        <div class="nu-card dash-stat-card">
+            <div class="dash-stat-label">
+                <span>Payout Queue</span>
+                <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Requested</span>
+            </div>
+            <div class="dash-stat-value">@(FirestoreService.PayoutQueueLoaded ? FirestoreService.PayoutQueue.Count.ToString("N0") : "—")</div>
+            <div class="dash-stat-hint">₱@FirestoreService.PayoutQueue.Sum(p => p.AmountPesos).ToString("N2") awaiting payout</div>
+        </div>
+
+        <div class="nu-card dash-stat-card">
+            <div class="dash-stat-label">
+                <span>Open Disputes</span>
+                <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Deposits</span>
+            </div>
+            <div class="dash-stat-value">@(FirestoreService.DisputeQueueLoaded ? FirestoreService.DisputeQueue.Count.ToString("N0") : "—")</div>
+            <div class="dash-stat-hint">₱@FirestoreService.DisputeQueue.Sum(d => d.DepositPesos).ToString("N2") in disputed deposits</div>
+        </div>
+    </div>
+
+    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; border-bottom: 2px solid var(--nu-border-color); padding-bottom: 0.5rem;">
+        <button type="button" style="@TabStyle("fees")" @onclick='() => SetTab("fees")'>
+            <span>Listing Fees</span>
+            <span class="badge-pill badge-pill-navy" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">@FirestoreService.ListingFeeTransactions.Count</span>
+        </button>
+        <button type="button" style="@TabStyle("forfeited")" @onclick='() => SetTab("forfeited")'>
+            <span>Forfeited Deposits</span>
+            <span class="badge-pill badge-pill-navy" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">@FirestoreService.ForfeitedDeposits.Count</span>
+        </button>
+        <button type="button" style="@TabStyle("programs")" @onclick='() => SetTab("programs")'>
+            <span>Program Breakdown</span>
+        </button>
+        <button type="button" style="@TabStyle("payouts")" @onclick='() => SetTab("payouts")'>
+            <span>Payout Queue</span>
+            @if (FirestoreService.PayoutQueue.Count > 0)
+            {
+                <span class="badge-pill badge-pill-gold" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">@FirestoreService.PayoutQueue.Count</span>
+            }
+        </button>
+        <button type="button" style="@TabStyle("disputes")" @onclick='() => SetTab("disputes")'>
+            <span>Dispute Queue</span>
+            @if (FirestoreService.DisputeQueue.Count > 0)
+            {
+                <span class="badge-pill badge-pill-gold" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">@FirestoreService.DisputeQueue.Count</span>
+            }
+        </button>
+    </div>
+
+    <div class="nu-card">
+        @if (_tab == "fees")
+        {
+            var feeRows = FilteredFees.ToList();
+            var feePage = _page.Slice(feeRows);
+            <div class="dash-toolbar">
+                <div>
+                    <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem;">Listing-fee transactions</h3>
+                    <div style="font-size: 0.8rem; color: var(--nu-text-muted);">Records in the transactions collection, newest first</div>
+                </div>
+                <div class="nu-toolbar-group">
+                    @SearchField("Search payer, listing, or reference...")
+                    <select class="nu-select" @bind="_packageFilter" @bind:after="_page.Reset" aria-label="Filter by package">
+                        <option value="">All packages</option>
+                        @foreach (var pkg in Distinct(FirestoreService.ListingFeeTransactions.Select(t => t.PackageType)))
+                        {
+                            <option value="@pkg">@pkg</option>
+                        }
+                    </select>
+                    <select class="nu-select" @bind="_statusFilter" @bind:after="_page.Reset" aria-label="Filter by status">
+                        <option value="">All statuses</option>
+                        @foreach (var s in Distinct(FirestoreService.ListingFeeTransactions.Select(t => t.Status)))
+                        {
+                            <option value="@s">@s.Replace('_', ' ')</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Payer</th>
+                            <th>Listing</th>
+                            <th>Package</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Payment reference</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.ListingFeeTransactionsLoaded)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">Loading transactions from Firestore...</td></tr>
+                        }
+                        else if (FirestoreService.ListingFeeTransactions.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No listing-fee transactions recorded yet.</td></tr>
+                        }
+                        else if (feeRows.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No transactions match the current filters.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var tx in feePage)
+                            {
+                                var payer = FindUser(tx.UserId);
+                                <tr>
+                                    <td>@FormatDate(tx.Timestamp)</td>
+                                    <td>
+                                        <div class="nu-cell-primary">@(payer?.DisplayName ?? (string.IsNullOrWhiteSpace(tx.UserEmail) ? "Unknown payer" : tx.UserEmail))</div>
+                                        <div class="nu-cell-sub">@(string.IsNullOrWhiteSpace(tx.UserEmail) ? payer?.Email : tx.UserEmail)</div>
+                                    </td>
+                                    <td>
+                                        <div class="nu-cell-primary">@ListingTitle(tx.ListingId)</div>
+                                        <div class="nu-cell-sub nu-mono">@(string.IsNullOrWhiteSpace(tx.ListingId) ? "—" : tx.ListingId)</div>
+                                    </td>
+                                    <td>@(string.IsNullOrWhiteSpace(tx.PackageType) ? "—" : tx.PackageType)</td>
+                                    <td><span class="nu-amount">₱@tx.Amount.ToString("N2")</span></td>
+                                    <td><StatusBadge Status="@tx.Status" Kind="payment" /></td>
+                                    <td>
+                                        <div class="nu-cell-sub nu-mono">@(string.IsNullOrWhiteSpace(tx.PayMongoIntentId) ? "—" : tx.PayMongoIntentId)</div>
+                                        <div class="nu-cell-sub nu-mono">@(string.IsNullOrWhiteSpace(tx.PaymentId) ? "" : $"Payment {tx.PaymentId}")</div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <Pager State="_page" TotalCount="feeRows.Count" Changed="StateHasChanged" />
+        }
+        else if (_tab == "forfeited")
+        {
+            var forfeitRows = FilteredForfeits.ToList();
+            var forfeitPage = _page.Slice(forfeitRows);
+            <div class="dash-toolbar">
+                <div>
+                    <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem;">Forfeited bid deposits</h3>
+                    <div style="font-size: 0.8rem; color: var(--nu-text-muted);">bidIntents with status "forfeited"</div>
+                </div>
+                <div class="nu-toolbar-group">
+                    @SearchField("Search listing, bidder, or seller...")
+                </div>
+            </div>
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Listing</th>
+                            <th>Bidder</th>
+                            <th>Seller</th>
+                            <th>Bid</th>
+                            <th>Deposit</th>
+                            <th>Resolved</th>
+                            <th>Refund reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.ForfeitedDepositsLoaded)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">Loading deposits from Firestore...</td></tr>
+                        }
+                        else if (FirestoreService.ForfeitedDeposits.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No forfeited deposits.</td></tr>
+                        }
+                        else if (forfeitRows.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No deposits match your search.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var d in forfeitPage)
+                            {
+                                <tr>
+                                    <td>
+                                        <div class="nu-cell-primary">@(string.IsNullOrWhiteSpace(d.ListingTitle) ? ListingTitle(d.ListingId) : d.ListingTitle)</div>
+                                        <div class="nu-cell-sub nu-mono">@d.ListingId</div>
+                                    </td>
+                                    <td>@UserCell(d.BidderUid)</td>
+                                    <td>@UserCell(d.SellerUid)</td>
+                                    <td>₱@d.AmountPesos.ToString("N2")</td>
+                                    <td><span class="nu-amount">₱@d.DepositPesos.ToString("N2")</span></td>
+                                    <td>@FormatDate(d.ResolvedAt ?? d.CreatedAt)</td>
+                                    <td>@(string.IsNullOrWhiteSpace(d.RefundReason) ? "—" : d.RefundReason)</td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <Pager State="_page" TotalCount="forfeitRows.Count" Changed="StateHasChanged" />
+        }
+        else if (_tab == "programs")
+        {
+            var rows = ProgramRows();
+            <div class="dash-toolbar">
+                <div>
+                    <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem;">Program breakdown</h3>
+                    <div style="font-size: 0.8rem; color: var(--nu-text-muted);">
+                        Grouped by users/{uid}.program: paid listing fees by payer (transactions.userId), forfeited deposits by bidder (bidIntents.bidderUid)
+                    </div>
+                </div>
+            </div>
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Program</th>
+                            <th>Paid listing-fee transactions</th>
+                            <th>Paid listing-fee amount</th>
+                            <th>Forfeited deposits</th>
+                            <th>Forfeited amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.UsersLoaded || !FirestoreService.ListingFeeTransactionsLoaded || !FirestoreService.ForfeitedDepositsLoaded)
+                        {
+                            <tr><td colspan="5" class="nu-empty-state">Loading users, transactions and deposits...</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var row in rows)
+                            {
+                                <tr>
+                                    <td><span class="nu-cell-primary">@row.Program</span></td>
+                                    <td>@row.FeeCount.ToString("N0")</td>
+                                    <td><span class="nu-amount">₱@row.FeeAmount.ToString("N2")</span></td>
+                                    <td>@row.ForfeitCount.ToString("N0")</td>
+                                    <td><span class="nu-amount">₱@row.ForfeitAmount.ToString("N2")</span></td>
+                                </tr>
+                            }
+                            <tr>
+                                <td><strong>Total</strong></td>
+                                <td><strong>@rows.Sum(r => r.FeeCount).ToString("N0")</strong></td>
+                                <td><strong>₱@rows.Sum(r => r.FeeAmount).ToString("N2")</strong></td>
+                                <td><strong>@rows.Sum(r => r.ForfeitCount).ToString("N0")</strong></td>
+                                <td><strong>₱@rows.Sum(r => r.ForfeitAmount).ToString("N2")</strong></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else if (_tab == "payouts")
+        {
+            var payoutRows = FilteredPayouts.ToList();
+            var payoutPage = _page.Slice(payoutRows);
+            <div class="dash-toolbar">
+                <div>
+                    <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem;">Payout queue</h3>
+                    <div style="font-size: 0.8rem; color: var(--nu-text-muted);">payoutRequests with status "requested", oldest first</div>
+                </div>
+                <div class="nu-toolbar-group">
+                    @SearchField("Search student or account...")
+                    <select class="nu-select" @bind="_methodFilter" @bind:after="_page.Reset" aria-label="Filter by payout method">
+                        <option value="">All methods</option>
+                        @foreach (var m in Distinct(FirestoreService.PayoutQueue.Select(p => p.Method)))
+                        {
+                            <option value="@m">@m</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Requested</th>
+                            <th>Student</th>
+                            <th>Amount</th>
+                            <th>Method</th>
+                            <th>Account</th>
+                            <th style="text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.PayoutQueueLoaded)
+                        {
+                            <tr><td colspan="6" class="nu-empty-state">Loading payout requests...</td></tr>
+                        }
+                        else if (FirestoreService.PayoutQueue.Count == 0)
+                        {
+                            <tr><td colspan="6" class="nu-empty-state">No payout requests are waiting.</td></tr>
+                        }
+                        else if (payoutRows.Count == 0)
+                        {
+                            <tr><td colspan="6" class="nu-empty-state">No payout requests match the current filters.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var p in payoutPage)
+                            {
+                                <tr>
+                                    <td>@FormatDate(p.CreatedAt)</td>
+                                    <td>@UserCell(p.Uid)</td>
+                                    <td><span class="nu-amount">₱@p.AmountPesos.ToString("N2")</span></td>
+                                    <td>@(string.IsNullOrWhiteSpace(p.Method) ? "—" : p.Method)</td>
+                                    <td>
+                                        <div class="nu-cell-primary">@(string.IsNullOrWhiteSpace(p.AccountName) ? "—" : p.AccountName)</div>
+                                        <div class="nu-cell-sub nu-mono">@p.AccountNumber</div>
+                                    </td>
+                                    <td style="text-align: right;">
+                                        <div class="listing-actions" style="justify-content: flex-end;">
+                                            <button type="button" class="btn-nu-success" style="font-size: 0.74rem; padding: 0.4rem 0.7rem;" @onclick="() => OpenPayout(p, paid: true)">Mark paid</button>
+                                            <button type="button" class="btn-nu-danger" style="font-size: 0.74rem; padding: 0.4rem 0.7rem;" @onclick="() => OpenPayout(p, paid: false)">Decline</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <Pager State="_page" TotalCount="payoutRows.Count" Changed="StateHasChanged" />
+        }
+        else if (_tab == "disputes")
+        {
+            var disputeRows = FilteredDisputes.ToList();
+            var disputePage = _page.Slice(disputeRows);
+            <div class="dash-toolbar">
+                <div>
+                    <h3 style="font-size: 1.05rem; font-weight: 700; margin: 0 0 0.2rem;">Dispute queue</h3>
+                    <div style="font-size: 0.8rem; color: var(--nu-text-muted);">disputes with status "open", oldest first</div>
+                </div>
+                <div class="nu-toolbar-group">
+                    @SearchField("Search listing, buyer, seller, or note...")
+                </div>
+            </div>
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Opened</th>
+                            <th>Listing</th>
+                            <th>Buyer</th>
+                            <th>Seller</th>
+                            <th>Deposit</th>
+                            <th>Note</th>
+                            <th style="text-align: right;">Resolve</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.DisputeQueueLoaded)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">Loading disputes...</td></tr>
+                        }
+                        else if (FirestoreService.DisputeQueue.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No open disputes.</td></tr>
+                        }
+                        else if (disputeRows.Count == 0)
+                        {
+                            <tr><td colspan="7" class="nu-empty-state">No disputes match your search.</td></tr>
+                        }
+                        else
+                        {
+                            @foreach (var d in disputePage)
+                            {
+                                <tr>
+                                    <td>@FormatDate(d.CreatedAt)</td>
+                                    <td>
+                                        <div class="nu-cell-primary">@(string.IsNullOrWhiteSpace(d.ListingTitle) ? ListingTitle(d.ListingId) : d.ListingTitle)</div>
+                                        <div class="nu-cell-sub nu-mono">@d.ListingId</div>
+                                    </td>
+                                    <td>@UserCell(d.BuyerUid)</td>
+                                    <td>@UserCell(d.SellerUid)</td>
+                                    <td><span class="nu-amount">₱@d.DepositPesos.ToString("N2")</span></td>
+                                    <td style="max-width: 260px; white-space: normal;">@(string.IsNullOrWhiteSpace(d.Note) ? "—" : d.Note)</td>
+                                    <td style="text-align: right;">
+                                        <div class="listing-actions" style="justify-content: flex-end;">
+                                            <button type="button" class="btn-nu-danger" style="font-size: 0.74rem; padding: 0.4rem 0.7rem;" @onclick='() => OpenDispute(d, "forfeit")'>Forfeit</button>
+                                            <button type="button" class="btn-nu-outline" style="font-size: 0.74rem; padding: 0.4rem 0.7rem;" @onclick='() => OpenDispute(d, "refund")'>Refund</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <Pager State="_page" TotalCount="disputeRows.Count" Changed="StateHasChanged" />
+        }
+    </div>
+</div>
+
+@if (_payoutTarget != null)
+{
+    <div class="nu-modal-backdrop" @onclick="ClosePayout">
+        <div class="nu-modal-card" style="max-width: 480px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header">
+                <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0;">
+                    @(_payoutMarkPaid ? "Mark payout as paid" : "Decline payout request")
+                </h3>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="ClosePayout" disabled="@_busy">✕</button>
+            </div>
+            <div class="nu-modal-body">
+                <p style="margin: 0 0 0.75rem; font-size: 0.88rem; line-height: 1.5;">
+                    <strong>₱@_payoutTarget.AmountPesos.ToString("N2")</strong> to
+                    <strong>@(string.IsNullOrWhiteSpace(_payoutTarget.AccountName) ? UserName(_payoutTarget.Uid) : _payoutTarget.AccountName)</strong>
+                    @if (!string.IsNullOrWhiteSpace(_payoutTarget.Method))
+                    {
+                        <span> via @_payoutTarget.Method</span>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_payoutTarget.AccountNumber))
+                    {
+                        <span> (@_payoutTarget.AccountNumber)</span>
+                    }
+                </p>
+                @if (_payoutMarkPaid)
+                {
+                    <p style="margin: 0; font-size: 0.8rem; color: var(--nu-text-muted);">
+                        Confirm only after the money has been sent. This calls the markPayoutPaid Cloud Function.
+                    </p>
+                }
+                else
+                {
+                    <label class="nu-label" for="decline-reason">Reason <span style="font-weight: 500; color: var(--nu-text-muted);">(optional)</span></label>
+                    <input id="decline-reason" type="text" class="nu-input" @bind="_declineReason" disabled="@_busy" />
+                    <p style="margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--nu-text-muted);">This calls the declinePayout Cloud Function.</p>
+                }
+            </div>
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="ClosePayout" disabled="@_busy">Cancel</button>
+                <button type="button" class="@(_payoutMarkPaid ? "btn-nu-success" : "btn-nu-danger")" @onclick="ConfirmPayout" disabled="@_busy">
+                    @(_busy ? "Working..." : _payoutMarkPaid ? "Mark paid" : "Decline")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_disputeTarget != null)
+{
+    <div class="nu-modal-backdrop" @onclick="CloseDispute">
+        <div class="nu-modal-card" style="max-width: 480px;" @onclick:stopPropagation="true">
+            <div class="nu-modal-header">
+                <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0;">
+                    Resolve dispute as @(_disputeResolution == "forfeit" ? "forfeit" : "refund")
+                </h3>
+                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="CloseDispute" disabled="@_busy">✕</button>
+            </div>
+            <div class="nu-modal-body">
+                <p style="margin: 0 0 0.75rem; font-size: 0.88rem; line-height: 1.5;">
+                    <strong>@(string.IsNullOrWhiteSpace(_disputeTarget.ListingTitle) ? ListingTitle(_disputeTarget.ListingId) : _disputeTarget.ListingTitle)</strong><br />
+                    Buyer: @UserName(_disputeTarget.BuyerUid) · Seller: @UserName(_disputeTarget.SellerUid)<br />
+                    Deposit: <strong>₱@_disputeTarget.DepositPesos.ToString("N2")</strong>
+                </p>
+                <p style="margin: 0; font-size: 0.8rem; color: var(--nu-text-muted);">
+                    This calls the resolveDispute Cloud Function with resolution "@_disputeResolution". It cannot be undone from this page.
+                </p>
+            </div>
+            <div class="nu-modal-footer">
+                <button type="button" class="btn-nu-outline" @onclick="CloseDispute" disabled="@_busy">Cancel</button>
+                <button type="button" class="@(_disputeResolution == "forfeit" ? "btn-nu-danger" : "btn-nu-success")" @onclick="ConfirmDispute" disabled="@_busy">
+                    @(_busy ? "Working..." : _disputeResolution == "forfeit" ? "Resolve as forfeit" : "Resolve as refund")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private static readonly string[] Programs = { "SACE", "SAHS", "SABM", "SHS" };
+    private const string ProgramNotRecorded = "Not recorded";
+
+    private string _tab = "fees";
+    private bool _busy;
+    private PayoutRequest? _payoutTarget;
+    private bool _payoutMarkPaid;
+    private string _declineReason = string.Empty;
+    private Dispute? _disputeTarget;
+    private string _disputeResolution = "forfeit";
+
+    private string _search = string.Empty;
+    private string _packageFilter = string.Empty;
+    private string _statusFilter = string.Empty;
+    private string _methodFilter = string.Empty;
+    private readonly PageState _page = new();
+
+    private RevenueCounter Counter => FirestoreService.RevenueCounter;
+
+    private sealed record ProgramRow(string Program, int FeeCount, decimal FeeAmount, int ForfeitCount, decimal ForfeitAmount);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await AuthService.InitializeAsync();
+
+        if (!AuthService.IsAuthenticated)
+        {
+            NavigationManager.NavigateTo("login");
+            return;
+        }
+
+        if (!AuthService.IsSecurityVerified)
+        {
+            NavigationManager.NavigateTo("security-verification");
+            return;
+        }
+
+        FirestoreService.OnRevenueDeskUpdated += HandleUpdate;
+        FirestoreService.OnAllUsersUpdated += HandleUpdate;
+        FirestoreService.OnAllListingsUpdated += HandleUpdate;
+        await FirestoreService.InitializeSubscriptionsAsync();
+        await FirestoreService.SubscribeRevenueDeskAsync();
+    }
+
+    private void HandleUpdate() => InvokeAsync(StateHasChanged);
+
+    private void SetTab(string key)
+    {
+        if (_tab == key) return;
+        _tab = key;
+        _search = string.Empty;
+        _packageFilter = string.Empty;
+        _statusFilter = string.Empty;
+        _methodFilter = string.Empty;
+        _page.Reset();
+    }
+
+    private void OnSearch(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? string.Empty;
+        _page.Reset();
+    }
+
+    private RenderFragment SearchField(string placeholder) => __builder =>
+    {
+        <div class="nu-search-field">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" class="nu-input" placeholder="@placeholder" value="@_search" @oninput="OnSearch" />
+        </div>
+    };
+
+    private static IEnumerable<string> Distinct(IEnumerable<string?> values) =>
+        values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!).Distinct().OrderBy(v => v);
+
+    private bool Matches(params string?[] values) =>
+        string.IsNullOrWhiteSpace(_search) ||
+        values.Any(v => !string.IsNullOrEmpty(v) && v.Contains(_search.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    private string UserText(string uid)
+    {
+        var user = FindUser(uid);
+        return $"{uid} {user?.DisplayName} {user?.Email}";
+    }
+
+    private IEnumerable<TransactionLedger> FilteredFees =>
+        FirestoreService.ListingFeeTransactions
+            .Where(t => string.IsNullOrEmpty(_packageFilter) || t.PackageType == _packageFilter)
+            .Where(t => string.IsNullOrEmpty(_statusFilter) || t.Status == _statusFilter)
+            .Where(t => Matches(UserText(t.UserId), t.UserEmail, t.ListingId, ListingTitle(t.ListingId), t.PayMongoIntentId, t.PaymentId));
+
+    private IEnumerable<BidIntent> FilteredForfeits =>
+        FirestoreService.ForfeitedDeposits
+            .Where(d => Matches(d.ListingId, d.ListingTitle, ListingTitle(d.ListingId), UserText(d.BidderUid), UserText(d.SellerUid), d.RefundReason));
+
+    private IEnumerable<PayoutRequest> FilteredPayouts =>
+        FirestoreService.PayoutQueue
+            .Where(p => string.IsNullOrEmpty(_methodFilter) || p.Method == _methodFilter)
+            .Where(p => Matches(UserText(p.Uid), p.AccountName, p.AccountNumber, p.Method));
+
+    private IEnumerable<Dispute> FilteredDisputes =>
+        FirestoreService.DisputeQueue
+            .Where(d => Matches(d.ListingId, d.ListingTitle, ListingTitle(d.ListingId), UserText(d.BuyerUid), UserText(d.SellerUid), d.Note));
+
+    private string TabStyle(string key)
+    {
+        var active = _tab == key;
+        return "padding: 0.6rem 1.2rem; font-weight: 700; font-size: 0.9rem; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; " +
+               $"border-bottom: 3px solid {(active ? "var(--nu-gold-primary)" : "transparent")}; " +
+               $"color: {(active ? "var(--nu-navy-primary)" : "var(--nu-text-muted)")};";
+    }
+
+    private string CounterValue(decimal pesos)
+    {
+        if (!FirestoreService.RevenueCounterLoaded) return "—";
+        return Counter.Exists ? $"₱{pesos:N2}" : "—";
+    }
+
+    private string CounterHint(string text)
+    {
+        if (!FirestoreService.RevenueCounterLoaded) return "Loading counters/revenue...";
+        return Counter.Exists ? text : "counters/revenue has not been written yet";
+    }
+
+    private UserProfile? FindUser(string uid) =>
+        string.IsNullOrWhiteSpace(uid) ? null : FirestoreService.AllUsers.FirstOrDefault(u => u.Uid == uid);
+
+    private string UserName(string uid)
+    {
+        var user = FindUser(uid);
+        if (user != null && !string.IsNullOrWhiteSpace(user.DisplayName)) return user.DisplayName;
+        return string.IsNullOrWhiteSpace(uid) ? "—" : uid;
+    }
+
+    private RenderFragment UserCell(string uid) => __builder =>
+    {
+        var user = FindUser(uid);
+        <div class="nu-cell-primary">@(user?.DisplayName ?? (string.IsNullOrWhiteSpace(uid) ? "—" : "Profile not found"))</div>
+        <div class="nu-cell-sub">@(user?.Email ?? uid)</div>
+    };
+
+    private string ListingTitle(string listingId)
+    {
+        if (string.IsNullOrWhiteSpace(listingId)) return "—";
+        var listing = FirestoreService.AllListings.FirstOrDefault(l => l.Id == listingId);
+        return listing != null && !string.IsNullOrWhiteSpace(listing.Title) ? listing.Title : "Listing";
+    }
+
+    private static string FormatDate(DateTime? value) =>
+        value.HasValue ? value.Value.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt") : "—";
+
+    private static string SourceLabel(string source) => source switch
+    {
+        "revenueCounter" => "counters/revenue",
+        "revenueTransactions" => "transactions",
+        "forfeitedDeposits" => "bidIntents",
+        "payoutQueue" => "payoutRequests",
+        "disputeQueue" => "disputes",
+        _ => "Revenue Desk"
+    };
+
+    private string ProgramOf(string uid)
+    {
+        var code = FindUser(uid)?.ProgramRaw ?? string.Empty;
+        return Programs.Contains(code) ? code : ProgramNotRecorded;
+    }
+
+    private List<ProgramRow> ProgramRows()
+    {
+        var fees = FirestoreService.ListingFeeTransactions
+            .Where(t => t.Status == "paid")
+            .GroupBy(t => ProgramOf(t.UserId)).ToDictionary(g => g.Key);
+        var forfeits = FirestoreService.ForfeitedDeposits.GroupBy(b => ProgramOf(b.BidderUid)).ToDictionary(g => g.Key);
+
+        return Programs.Append(ProgramNotRecorded)
+            .Select(p => new ProgramRow(
+                p,
+                fees.TryGetValue(p, out var f) ? f.Count() : 0,
+                f?.Sum(t => t.Amount) ?? 0m,
+                forfeits.TryGetValue(p, out var d) ? d.Count() : 0,
+                d?.Sum(b => b.DepositPesos) ?? 0m))
+            .ToList();
+    }
+
+    private void OpenPayout(PayoutRequest payout, bool paid)
+    {
+        _payoutTarget = payout;
+        _payoutMarkPaid = paid;
+        _declineReason = string.Empty;
+    }
+
+    private void ClosePayout()
+    {
+        if (_busy) return;
+        _payoutTarget = null;
+        _declineReason = string.Empty;
+    }
+
+    private async Task ConfirmPayout()
+    {
+        if (_payoutTarget == null || _busy) return;
+        _busy = true;
+        var target = _payoutTarget;
+
+        var result = _payoutMarkPaid
+            ? await FirestoreService.MarkPayoutPaidAsync(target.Id)
+            : await FirestoreService.DeclinePayoutAsync(target.Id, _declineReason);
+
+        _busy = false;
+        if (result.Success)
+        {
+            ToastService.ShowSuccess(_payoutMarkPaid
+                ? $"Payout of ₱{target.AmountPesos:N2} marked as paid."
+                : $"Payout request of ₱{target.AmountPesos:N2} declined.",
+                "Payout updated");
+            ClosePayout();
+        }
+        else
+        {
+            ToastService.ShowError(DescribeFailure(result), _payoutMarkPaid ? "markPayoutPaid failed" : "declinePayout failed");
+        }
+    }
+
+    private void OpenDispute(Dispute dispute, string resolution)
+    {
+        _disputeTarget = dispute;
+        _disputeResolution = resolution;
+    }
+
+    private void CloseDispute()
+    {
+        if (_busy) return;
+        _disputeTarget = null;
+    }
+
+    private async Task ConfirmDispute()
+    {
+        if (_disputeTarget == null || _busy) return;
+        _busy = true;
+        var result = await FirestoreService.ResolveDisputeAsync(_disputeTarget.Id, _disputeResolution);
+        _busy = false;
+
+        if (result.Success)
+        {
+            ToastService.ShowSuccess($"Dispute resolved as {_disputeResolution}.", "Dispute resolved");
+            CloseDispute();
+        }
+        else
+        {
+            ToastService.ShowError(DescribeFailure(result), "resolveDispute failed");
+        }
+    }
+
+    private static string DescribeFailure(FunctionResult result) => result.ErrorCode switch
+    {
+        "permission-denied" => "This account is not allowed to perform this action. The admin custom claim is required.",
+        "unauthenticated" => "The admin session has expired. Sign out and back in.",
+        "not-found" => result.ErrorMessage ?? "The record no longer exists.",
+        _ => string.IsNullOrWhiteSpace(result.ErrorMessage) ? "The request failed." : result.ErrorMessage
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        FirestoreService.OnRevenueDeskUpdated -= HandleUpdate;
+        FirestoreService.OnAllUsersUpdated -= HandleUpdate;
+        FirestoreService.OnAllListingsUpdated -= HandleUpdate;
+        await FirestoreService.UnsubscribeRevenueDeskAsync();
+    }
+}

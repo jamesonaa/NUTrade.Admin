@@ -57,36 +57,79 @@
                 @FirestoreService.ActiveListings.Count
             </span>
         </button>
+
+        <button type="button"
+                class="btn-tab @(_activeTab == "all" ? "active" : "")"
+                style="padding: 0.6rem 1.2rem; font-weight: 700; font-size: 0.9rem; border: none; background: transparent; cursor: pointer; border-bottom: 3px solid @(_activeTab == "all" ? "var(--nu-gold-primary)" : "transparent"); color: @(_activeTab == "all" ? "var(--nu-navy-primary)" : "var(--nu-text-muted)"); display: flex; align-items: center; gap: 0.5rem;"
+                @onclick='() => _activeTab = "all"'>
+            <span>All Listings &amp; Trades</span>
+            <span class="badge-pill badge-pill-navy" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">
+                @FirestoreService.AllListings.Count
+            </span>
+        </button>
     </div>
+
+    @if (!string.IsNullOrWhiteSpace(FirestoreService.LastListenerError))
+    {
+        <div class="nu-inline-error">@FirestoreService.LastListenerError</div>
+    }
 
     <div class="nu-card">
         <div class="dash-toolbar">
-            <div class="nu-search-field" style="max-width: 380px;">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
-                    <circle cx="11" cy="11" r="8"/>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                </svg>
-                <input type="text"
-                       class="nu-input"
-                       placeholder="Filter by title, category, or seller..."
-                       @bind="_searchKeyword"
-                       @bind:event="oninput" />
+            <div class="nu-toolbar-group" style="flex: 1;">
+                <div class="nu-search-field" style="max-width: 380px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input type="text"
+                           class="nu-input"
+                           placeholder="Filter by title, category, seller, or listing ID..."
+                           @bind="_searchKeyword"
+                           @bind:event="oninput"
+                           @bind:after="ResetPages" />
+                </div>
+
+                <select class="nu-select" @bind="_packageFilter" @bind:after="ResetPages" aria-label="Filter by package">
+                    <option value="">All packages</option>
+                    @foreach (var pkg in PackageOptions)
+                    {
+                        <option value="@pkg">@pkg</option>
+                    }
+                </select>
+
+                @if (_activeTab == "all")
+                {
+                    <select class="nu-select" @bind="_statusFilter" @bind:after="_allPage.Reset" aria-label="Filter by status">
+                        <option value="">All statuses (@FirestoreService.AllListings.Count)</option>
+                        @foreach (var group in StatusCounts)
+                        {
+                            <option value="@group.Status">@StatusLabel(group.Status) (@group.Count)</option>
+                        }
+                    </select>
+                }
             </div>
 
             <div style="font-size: 0.78rem; color: var(--nu-text-muted);">
                 @if (_activeTab == "pending")
                 {
-                    <span>Query: <code class="nu-mono" style="color: var(--nu-gold-primary); font-weight: 700;">listings.where('status', '==', 'pending_approval')</code></span>
+                    <span>Showing @FilteredPendingListings.Count() of @FirestoreService.PendingApprovalListings.Count awaiting a decision</span>
+                }
+                else if (_activeTab == "active")
+                {
+                    <span>Showing @FilteredActiveListings.Count() of @FirestoreService.ActiveListings.Count live listings</span>
                 }
                 else
                 {
-                    <span>Query: <code class="nu-mono" style="color: var(--nu-navy-primary); font-weight: 700;">listings.where('status', '==', 'active')</code></span>
+                    <span>Showing @FilteredAllListings.Count() of @FirestoreService.AllListings.Count listings</span>
                 }
             </div>
         </div>
 
         @if (_activeTab == "pending")
         {
+            var pendingRows = FilteredPendingListings.ToList();
+            var pendingPage = _pendingPage.Slice(pendingRows);
             <!-- PENDING APPROVAL QUEUE -->
             <div class="nu-table-container">
                 <table class="nu-table">
@@ -101,19 +144,26 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @if (FilteredPendingListings.Any())
+                        @if (pendingRows.Count > 0)
                         {
-                            @foreach (var listing in FilteredPendingListings)
+                            @foreach (var listing in pendingPage)
                             {
                                 <tr>
                                     <td>
                                         <div class="listing-item-cell">
-                                            <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
-                                                 alt="@listing.Title"
-                                                 class="listing-thumb"
-                                                 loading="lazy"
-                                                 style="cursor: zoom-in;"
-                                                 @onclick="() => PromptViewImage(listing)" />
+                                            @if (string.IsNullOrWhiteSpace(listing.ImageUrl))
+                                            {
+                                                <div class="nu-thumb-placeholder">No photo</div>
+                                            }
+                                            else
+                                            {
+                                                <img src="@listing.ImageUrl"
+                                                     alt="@listing.Title"
+                                                     class="listing-thumb"
+                                                     loading="lazy"
+                                                     style="cursor: zoom-in;"
+                                                     @onclick="() => PromptViewImage(listing)" />
+                                            }
                                             <div style="max-width: 260px; min-width: 0;">
                                                 <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.9rem; line-height: 1.3;">
                                                     @listing.Title
@@ -139,7 +189,7 @@
                                         @{
                                             var profile = GetSellerProfile(listing.SellerUid);
                                             var sellerDisplayName = GetDisplayName(profile, listing);
-                                            var sellerProgram = profile != null ? profile.FormattedProgram : "School of Program";
+                                            var sellerProgram = profile != null ? profile.FormattedProgram : "Profile not found";
                                         }
                                         <div style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: rgba(0, 43, 91, 0.03); border: 1px solid rgba(0, 43, 91, 0.08); transition: all 0.2s ease-in-out;"
                                              title="Click to view full seller profile"
@@ -188,7 +238,7 @@
                                             else
                                             {
                                                 <span class="badge-pill" style="background: rgba(100, 116, 139, 0.12); color: #475569; font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; display: inline-flex; align-items: center; gap: 4px;">
-                                                    Free Post (₱0) — no payment required
+                                                    Free — no payment required
                                                 </span>
                                             }
                                             <div class="nu-cell-sub nu-mono" style="font-size: 0.65rem; color: #64748B;">
@@ -200,12 +250,13 @@
                                             </div>
                                         </div>
                                     </td>
+                                    @{ var submittedAt = listing.SubmittedForApprovalAt ?? listing.CreatedAt; }
                                     <td>
                                         <div style="font-size: 0.82rem; font-weight: 600; color: var(--nu-navy-primary);">
-                                            @(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "—")
+                                            @(submittedAt.HasValue ? submittedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "—")
                                         </div>
                                         <div class="nu-cell-sub">
-                                            @(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("hh:mm tt") : "")
+                                            @(submittedAt.HasValue ? submittedAt.Value.ToLocalTime().ToString("hh:mm tt") : "")
                                         </div>
                                     </td>
                                     <td style="text-align: right;">
@@ -235,8 +286,15 @@
                                             <button type="button"
                                                     class="btn-nu-danger"
                                                     style="font-size: 0.76rem; padding: 0.45rem 0.8rem; font-weight: 700;"
+                                                    disabled="@isProcessing"
                                                     @onclick="() => PromptReject(listing)">
-                                                ✕ Reject
+                                                Reject
+                                            </button>
+                                            <button type="button"
+                                                    class="btn-nu-outline"
+                                                    style="font-size: 0.76rem; padding: 0.45rem 0.7rem;"
+                                                    @onclick="() => OpenDetails(listing)">
+                                                Details
                                             </button>
                                         </div>
                                     </td>
@@ -247,17 +305,27 @@
                         {
                             <tr>
                                 <td colspan="6" class="nu-empty-state" style="padding: 3rem 1.5rem;">
-                                    <div style="font-weight: 700; font-size: 1rem; color: var(--nu-navy-primary);">All listing submissions are up to date!</div>
-                                    <div style="font-size: 0.82rem; color: var(--nu-text-muted); margin-top: 4px;">No pending listing approvals match your query.</div>
+                                    @if (!FirestoreService.ListingsLoaded)
+                                    {
+                                        <div>Loading listings from Firestore...</div>
+                                    }
+                                    else
+                                    {
+                                        <div style="font-weight: 700; font-size: 1rem; color: var(--nu-navy-primary);">No listings are awaiting approval</div>
+                                        <div style="font-size: 0.82rem; color: var(--nu-text-muted); margin-top: 4px;">New submissions from the student app appear here automatically.</div>
+                                    }
                                 </td>
                             </tr>
                         }
                     </tbody>
                 </table>
             </div>
+            <Pager State="_pendingPage" TotalCount="pendingRows.Count" Changed="StateHasChanged" />
         }
-        else
+        else if (_activeTab == "active")
         {
+            var activeRows = FilteredActiveListings.ToList();
+            var activePage = _activePage.Slice(activeRows);
             <!-- ACTIVE MARKETPLACE FEED -->
             <div class="nu-table-container">
                 <table class="nu-table">
@@ -274,19 +342,26 @@
                         </tr>
                     </thead>
                     <tbody>
-                        @if (FilteredActiveListings.Any())
+                        @if (activeRows.Count > 0)
                         {
-                            @foreach (var listing in FilteredActiveListings)
+                            @foreach (var listing in activePage)
                             {
                                 <tr>
                                     <td>
                                         <div class="listing-item-cell">
-                                            <img src="@(string.IsNullOrWhiteSpace(listing.ImageUrl) ? "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=200" : listing.ImageUrl)"
-                                                 alt="@listing.Title"
-                                                 class="listing-thumb"
-                                                 loading="lazy"
-                                                 style="cursor: zoom-in;"
-                                                 @onclick="() => PromptViewImage(listing)" />
+                                            @if (string.IsNullOrWhiteSpace(listing.ImageUrl))
+                                            {
+                                                <div class="nu-thumb-placeholder">No photo</div>
+                                            }
+                                            else
+                                            {
+                                                <img src="@listing.ImageUrl"
+                                                     alt="@listing.Title"
+                                                     class="listing-thumb"
+                                                     loading="lazy"
+                                                     style="cursor: zoom-in;"
+                                                     @onclick="() => PromptViewImage(listing)" />
+                                            }
                                             <div style="max-width: 220px; min-width: 0;">
                                                 <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.88rem; line-height: 1.3;">
                                                     @listing.Title
@@ -306,12 +381,12 @@
                                         @{
                                             var profile = GetSellerProfile(listing.SellerUid);
                                             var sellerDisplayName = GetDisplayName(profile, listing);
-                                            var sellerProgram = profile != null ? profile.FormattedProgram : "School of Program";
+                                            var sellerProgram = profile != null ? profile.FormattedProgram : "Profile not found";
                                         }
                                         <div style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: rgba(0, 43, 91, 0.03); border: 1px solid rgba(0, 43, 91, 0.08); transition: all 0.2s ease-in-out;"
                                              title="Click to view full seller profile"
                                              @onclick="() => PromptViewSeller(listing.SellerUid, sellerDisplayName, profile, listing.SellerEmail)">
-                                            <div class="nu-cell-primary" style="font-size: 0.84rem; font-weight: 700; color: var(--nu-navy-primary); display: flex; align-items: justify-content: space-between; gap: 4px;">
+                                            <div class="nu-cell-primary" style="font-size: 0.84rem; font-weight: 700; color: var(--nu-navy-primary); display: flex; align-items: center; justify-content: space-between; gap: 4px;">
                                                 <div style="display:flex;align-items:center;gap:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>@sellerDisplayName</span></div>
                                                 <span style="font-size: 0.72rem; color: var(--nu-gold-primary); background: rgba(212, 160, 23, 0.15); padding: 1px 5px; border-radius: 4px;">Info</span>
                                             </div>
@@ -342,37 +417,30 @@
                                         }
                                     </td>
                                     <td>
-                                        <div style="font-weight: 700; font-size: 0.84rem; color: @(listing.RemainingTime.TotalHours < 3 ? "var(--nu-danger)" : "var(--nu-navy-primary)");">
-                                            @FormatTimeSpan(listing.RemainingTime)
+                                        <div>
+                                            <AuctionCountdown EndsAt="listing.AuctionEndsAt" />
                                         </div>
                                         <div class="nu-cell-sub">
                                             Ends @(listing.AuctionEndsAt.HasValue ? listing.AuctionEndsAt.Value.ToLocalTime().ToString("MMM dd, hh:mm tt") : "TBD")
                                         </div>
                                     </td>
                                     <td>
-                                        @if (listing.IsPinned)
+                                        @if (listing.PaidPackage == "Priority Pin")
                                         {
-                                            <span class="badge-pill badge-pill-gold">Pinned (₱20)</span>
+                                            <span class="badge-pill badge-pill-gold">Priority Pin</span>
                                         }
                                         else
                                         {
-                                            <span style="font-size: 0.78rem; color: var(--nu-text-muted);">Standard</span>
+                                            <span style="font-size: 0.78rem; color: var(--nu-text-muted);">@(string.IsNullOrWhiteSpace(listing.PaidPackage) ? "—" : listing.PaidPackage)</span>
                                         }
                                     </td>
                                     <td style="text-align: right;">
                                         <div class="listing-actions">
                                             <button type="button"
-                                                    class="btn-nu-danger"
-                                                    style="font-size: 0.74rem; padding: 0.4rem 0.7rem;"
-                                                    @onclick="() => PromptUnpublish(listing)">
-                                                Unpublish
-                                            </button>
-                                            <button type="button"
                                                     class="btn-nu-outline"
                                                     style="font-size: 0.74rem; padding: 0.4rem 0.6rem;"
-                                                    title="Toggle Pin for testing"
-                                                    @onclick="() => TogglePin(listing)">
-                                                @(listing.IsPinned ? "Unpin" : "Pin")
+                                                    @onclick="() => OpenDetails(listing)">
+                                                Details &amp; bids
                                             </button>
                                         </div>
                                     </td>
@@ -383,16 +451,130 @@
                         {
                             <tr>
                                 <td colspan="8" class="nu-empty-state">
-                                    No active marketplace listings match your query.
+                                    @(FirestoreService.ListingsLoaded ? "No live listings match your query." : "Loading listings from Firestore...")
                                 </td>
                             </tr>
                         }
                     </tbody>
                 </table>
             </div>
+            <Pager State="_activePage" TotalCount="activeRows.Count" Changed="StateHasChanged" />
+        }
+        else
+        {
+            var allRows = FilteredAllListings.ToList();
+            var allPage = _allPage.Slice(allRows);
+            <!-- ALL LISTINGS (every status, including settled auctions and trades) -->
+            <div class="nu-table-container">
+                <table class="nu-table">
+                    <thead>
+                        <tr>
+                            <th>Listing</th>
+                            <th>Seller</th>
+                            <th>Status</th>
+                            <th>Bids / Highest</th>
+                            <th>Payment</th>
+                            <th>Auction</th>
+                            <th style="text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!FirestoreService.ListingsLoaded)
+                        {
+                            <tr>
+                                <td colspan="7" class="nu-empty-state">Loading listings from Firestore...</td>
+                            </tr>
+                        }
+                        else if (allRows.Count > 0)
+                        {
+                            @foreach (var listing in allPage)
+                            {
+                                var profile = GetSellerProfile(listing.SellerUid);
+                                var sellerDisplayName = GetDisplayName(profile, listing);
+                                <tr>
+                                    <td>
+                                        <div class="listing-item-cell">
+                                            @if (string.IsNullOrWhiteSpace(listing.ImageUrl))
+                                            {
+                                                <div class="nu-thumb-placeholder">No photo</div>
+                                            }
+                                            else
+                                            {
+                                                <img src="@listing.ImageUrl" alt="@listing.Title" class="listing-thumb" loading="lazy" />
+                                            }
+                                            <div style="max-width: 240px; min-width: 0;">
+                                                <div style="font-family: 'Outfit', sans-serif; font-weight: 700; color: var(--nu-navy-primary); font-size: 0.88rem; line-height: 1.3;">
+                                                    @listing.Title
+                                                </div>
+                                                <div class="nu-cell-sub">@listing.Category · @(listing.CreatedAt.HasValue ? listing.CreatedAt.Value.ToLocalTime().ToString("MMM dd, yyyy") : "no date")</div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <div class="nu-cell-primary" style="font-size: 0.84rem;">@sellerDisplayName</div>
+                                        <div class="nu-cell-sub">@(profile?.Email ?? (string.IsNullOrWhiteSpace(listing.SellerEmail) ? "—" : listing.SellerEmail))</div>
+                                    </td>
+                                    <td>
+                                        <StatusBadge Status="@listing.Status" />
+                                        @if (!string.IsNullOrWhiteSpace(listing.WinnerUid))
+                                        {
+                                            <div class="nu-cell-sub" style="margin-top: 4px;">Awarded</div>
+                                        }
+                                    </td>
+                                    <td>
+                                        <div class="nu-amount" style="font-size: 0.95rem;">₱@listing.CurrentHighestBid.ToString("N2")</div>
+                                        <div class="nu-cell-sub">@listing.TotalBids bid@(listing.TotalBids == 1 ? "" : "s")</div>
+                                    </td>
+                                    <td>
+                                        <span class="badge-pill @(listing.PaymentLabel == "Paid" ? "badge-pill-success" : listing.PaymentLabel == "Unpaid" ? "badge-pill-danger" : "badge-pill-muted")">
+                                            @listing.PaymentLabel
+                                        </span>
+                                        <div class="nu-cell-sub">@listing.PaidPackage</div>
+                                    </td>
+                                    <td>
+                                        @if (listing.AuctionEndsAt.HasValue)
+                                        {
+                                            <div style="font-weight: 600; font-size: 0.82rem; color: var(--nu-navy-primary);">
+                                                @(listing.IsExpired ? "Ended" : FormatTimeSpan(listing.RemainingTime))
+                                            </div>
+                                            <div class="nu-cell-sub">@listing.AuctionEndsAt.Value.ToLocalTime().ToString("MMM dd, hh:mm tt")</div>
+                                        }
+                                        else
+                                        {
+                                            <span class="nu-cell-sub">Not started</span>
+                                        }
+                                    </td>
+                                    <td style="text-align: right;">
+                                        <button type="button"
+                                                class="btn-nu-outline"
+                                                style="font-size: 0.74rem; padding: 0.4rem 0.7rem;"
+                                                @onclick="() => OpenDetails(listing)">
+                                            Details
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="7" class="nu-empty-state">
+                                    @(FirestoreService.AllListings.Count == 0 ? "No listings have been created yet." : "No listings match the current filters.")
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (FirestoreService.ListingsLoaded)
+            {
+                <Pager State="_allPage" TotalCount="allRows.Count" Changed="StateHasChanged" />
+            }
         }
     </div>
 </div>
+
+<ListingDetailModal Listing="_detailListing" OnClose="CloseDetails" />
 
 <!-- REJECTION REASON MODAL -->
 @if (_selectedListingToReject != null)
@@ -413,16 +595,16 @@
 
                 <div style="margin-bottom: 1rem;">
                     <label style="display: block; font-size: 0.8rem; font-weight: 700; color: var(--nu-navy-primary); margin-bottom: 0.35rem;">
-                        Rejection Reason (Optional - Max 500 chars):
+                        Rejection Reason (Optional - Max 300 chars):
                     </label>
                     <textarea class="nu-input"
                               rows="4"
                               placeholder="Specify why this listing was not approved (e.g. Prohibited item, blurred image, misleading title)..."
-                              maxlength="500"
+                              maxlength="300"
                               @bind="_rejectionReason">
                     </textarea>
                     <div style="font-size: 0.72rem; color: var(--nu-text-muted); text-align: right; margin-top: 4px;">
-                        @(_rejectionReason?.Length ?? 0) / 500 characters
+                        @(_rejectionReason?.Length ?? 0) / 300 characters
                     </div>
                 </div>
 
@@ -437,39 +619,6 @@
                 </button>
                 <button type="button" class="btn-nu-danger" style="background: var(--nu-danger); color: white; border-color: var(--nu-danger);" @onclick="ConfirmReject">
                     Confirm Rejection
-                </button>
-            </div>
-        </div>
-    </div>
-}
-
-<!-- UNPUBLISH MODAL -->
-@if (_selectedListingToUnpublish != null)
-{
-    <div class="nu-modal-backdrop" @onclick="() => _selectedListingToUnpublish = null">
-        <div class="nu-modal-card" style="max-width: 500px;" @onclick:stopPropagation="true">
-            <div class="nu-modal-header" style="background: var(--nu-danger-bg);">
-                <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-danger); margin: 0;">
-                    Confirm Listing Unpublish Override
-                </h3>
-                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="() => _selectedListingToUnpublish = null">✕</button>
-            </div>
-
-            <div class="nu-modal-body">
-                <p style="font-size: 0.9rem; color: var(--nu-text-body); margin: 0 0 0.9rem;">
-                    Are you sure you want to unpublish <strong>"@_selectedListingToUnpublish.Title"</strong>?
-                </p>
-                <div class="nu-callout">
-                    This will immediately update Firestore <code class="nu-mono" style="font-weight: 700; color: var(--nu-navy-primary);">listings/@(_selectedListingToUnpublish.Id) → status: 'unpublished'</code>, hiding it from student buyer feeds and preventing further bidding.
-                </div>
-            </div>
-
-            <div class="nu-modal-footer">
-                <button type="button" class="btn-nu-outline" @onclick="() => _selectedListingToUnpublish = null">
-                    Cancel
-                </button>
-                <button type="button" class="btn-nu-danger" style="background: var(--nu-danger); color: white; border-color: var(--nu-danger);" @onclick="ConfirmUnpublish">
-                    Confirm Override & Unpublish
                 </button>
             </div>
         </div>
@@ -509,10 +658,7 @@
                 }
                 else
                 {
-                    <img src="https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800" 
-                         alt="Placeholder" 
-                         loading="lazy"
-                         style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 12px rgba(0,0,0,0.1);" />
+                    <div class="nu-thumb-placeholder" style="width: 100%; height: 160px; font-size: 0.85rem;">No photos uploaded for this listing</div>
                 }
             </div>
         </div>
@@ -532,7 +678,7 @@
                             Student Seller Profile
                         </h3>
                         <div style="font-size: 0.75rem; color: var(--nu-gold-primary);">
-                            NU Campus Verified Identity
+                            From users/@_selectedSellerUid
                         </div>
                     </div>
                 </div>
@@ -560,17 +706,13 @@
                             @(_selectedSellerProfile?.Email ?? (!string.IsNullOrWhiteSpace(_selectedSellerFallbackEmail) ? _selectedSellerFallbackEmail : "No email linked"))
                         </div>
                         <div style="margin-top: 4px;">
-                            @if (_selectedSellerProfile?.IsVerified == true || _selectedSellerProfile?.VerificationStatus == "verified")
+                            @if (_selectedSellerProfile == null)
                             {
-                                <span class="badge-pill badge-pill-success" style="font-size: 0.7rem;">✓ Verified Student</span>
-                            }
-                            else if (_selectedSellerProfile?.VerificationStatus == "rejected")
-                            {
-                                <span class="badge-pill badge-pill-danger" style="font-size: 0.7rem;">✕ Verification Rejected</span>
+                                <span class="badge-pill badge-pill-muted" style="font-size: 0.7rem;">No profile document</span>
                             }
                             else
                             {
-                                <span class="badge-pill badge-pill-warning" style="font-size: 0.7rem;">⏳ Pending Verification</span>
+                                <StatusBadge Status="@_selectedSellerProfile.EffectiveVerificationStatus" Kind="verification" />
                             }
                         </div>
                     </div>
@@ -581,7 +723,7 @@
                     <div style="background: #F8FAFC; padding: 0.75rem; border-radius: 8px; border: 1px solid #E2E8F0;">
                         <div style="font-size: 0.72rem; color: var(--nu-text-muted); font-weight: 700; text-transform: uppercase;">Academic Program</div>
                         <div style="font-weight: 700; color: var(--nu-navy-primary); margin-top: 2px;">
-                            @(_selectedSellerProfile != null ? _selectedSellerProfile.FormattedProgram : "School of Program")
+                            @(_selectedSellerProfile != null ? _selectedSellerProfile.FormattedProgram : "Profile not found")
                         </div>
                     </div>
 
@@ -619,9 +761,14 @@
 }
 
 @code {
-    private string _activeTab = "pending"; // "pending" or "active"
+    private string _activeTab = "pending"; // "pending", "active" or "all"
     private string _searchKeyword = string.Empty;
-    private MarketplaceListing? _selectedListingToUnpublish;
+    private string _statusFilter = string.Empty;
+    private string _packageFilter = string.Empty;
+    private readonly PageState _pendingPage = new();
+    private readonly PageState _activePage = new();
+    private readonly PageState _allPage = new();
+    private MarketplaceListing? _detailListing;
     private MarketplaceListing? _selectedListingToReject;
     private MarketplaceListing? _selectedImageToView;
     private string _rejectionReason = string.Empty;
@@ -674,23 +821,65 @@
         _selectedSellerFallbackEmail = string.Empty;
     }
 
+    private bool MatchesSearch(MarketplaceListing l)
+    {
+        if (string.IsNullOrWhiteSpace(_searchKeyword)) return true;
+        var k = _searchKeyword.Trim();
+        var sellerEmail = GetSellerProfile(l.SellerUid)?.Email ?? l.SellerEmail;
+        return l.Title.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+               l.Category.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+               l.SellerName.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+               l.SellerUid.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+               l.Id.Contains(k, StringComparison.OrdinalIgnoreCase) ||
+               (sellerEmail ?? string.Empty).Contains(k, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool MatchesPackage(MarketplaceListing listing) =>
+        string.IsNullOrEmpty(_packageFilter) || listing.PaidPackage == _packageFilter;
+
+    private IEnumerable<string> PackageOptions =>
+        FirestoreService.AllListings.Select(l => l.PaidPackage)
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Distinct().OrderBy(p => p);
+
+    private void ResetPages()
+    {
+        _pendingPage.Reset();
+        _activePage.Reset();
+        _allPage.Reset();
+    }
+
     private IEnumerable<MarketplaceListing> FilteredPendingListings =>
-        string.IsNullOrWhiteSpace(_searchKeyword)
-            ? FirestoreService.PendingApprovalListings
-            : FirestoreService.PendingApprovalListings.Where(l =>
-                l.Title.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.Category.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.SellerName.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.SellerUid.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase));
+        FirestoreService.PendingApprovalListings.Where(MatchesPackage).Where(MatchesSearch);
 
     private IEnumerable<MarketplaceListing> FilteredActiveListings =>
-        string.IsNullOrWhiteSpace(_searchKeyword)
-            ? FirestoreService.ActiveListings
-            : FirestoreService.ActiveListings.Where(l =>
-                l.Title.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.Category.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.SellerName.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase) ||
-                l.SellerUid.Contains(_searchKeyword, StringComparison.OrdinalIgnoreCase));
+        FirestoreService.ActiveListings.Where(MatchesPackage).Where(MatchesSearch);
+
+    private IEnumerable<MarketplaceListing> FilteredAllListings =>
+        FirestoreService.AllListings
+            .Where(l => string.IsNullOrEmpty(_statusFilter) || NormalizeStatus(l.Status) == _statusFilter)
+            .Where(MatchesPackage)
+            .Where(MatchesSearch)
+            .OrderByDescending(l => l.CreatedAt ?? DateTime.MinValue);
+
+    // Built from the statuses actually present in /listings, so the filter never offers a state the app does not write.
+    private IEnumerable<(string Status, int Count)> StatusCounts =>
+        FirestoreService.AllListings
+            .GroupBy(l => NormalizeStatus(l.Status))
+            .Select(g => (g.Key, g.Count()))
+            .OrderByDescending(g => g.Item2);
+
+    private static string NormalizeStatus(string? status) => (status ?? string.Empty).Trim().ToLowerInvariant();
+
+    private static string StatusLabel(string status)
+    {
+        if (string.IsNullOrEmpty(status)) return "No status";
+        var text = status.Replace('_', ' ');
+        return char.ToUpperInvariant(text[0]) + text[1..];
+    }
+
+    private void OpenDetails(MarketplaceListing listing) => _detailListing = listing;
+
+    private void CloseDetails() => _detailListing = null;
 
     protected override async Task OnInitializedAsync()
     {
@@ -710,12 +899,18 @@
 
         FirestoreService.OnListingsUpdated += HandleUpdate;
         FirestoreService.OnPendingListingsUpdated += HandleUpdate;
+        FirestoreService.OnAllListingsUpdated += HandleUpdate;
         FirestoreService.OnAllUsersUpdated += HandleUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }
 
     private void HandleUpdate()
     {
+        // Keep an open detail view pointed at the latest snapshot of the same listing.
+        if (_detailListing != null)
+        {
+            _detailListing = FirestoreService.AllListings.FirstOrDefault(l => l.Id == _detailListing.Id) ?? _detailListing;
+        }
         InvokeAsync(StateHasChanged);
     }
 
@@ -747,17 +942,17 @@
 
         try
         {
-            var success = await FirestoreService.ApproveListingAsync(listing.Id);
-            if (success)
+            var result = await FirestoreService.ApproveListingAsync(listing.Id);
+            if (result.Success)
             {
                 ToastService.ShowSuccess(
-                    $"Listing \u201c{listing.Title}\u201d has been approved and is now live on the marketplace.",
+                    $"Listing \u201c{listing.Title}\u201d was approved. The approveListing function sets its auction clock and feed slot.",
                     "Listing Approved");
             }
             else
             {
                 ToastService.ShowError(
-                    "Approval failed. The Cloud Function rejected the request — ensure the admin account has the 'admin' custom claim set in Firebase. Check the browser console for details.",
+                    $"approveListing refused the request: {DescribeFailure(result)}",
                     "Approval Failed");
             }
         }
@@ -785,14 +980,18 @@
 
         try
         {
-            var success = await FirestoreService.RejectListingAsync(id, _rejectionReason);
-            _selectedListingToReject = null;
-            _rejectionReason = string.Empty;
+            var result = await FirestoreService.RejectListingAsync(id, _rejectionReason);
 
-            if (success)
-                ToastService.ShowSuccess($"Listing \u201c{title}\u201d has been rejected and removed from the approval queue.", "Listing Rejected");
+            if (result.Success)
+            {
+                _selectedListingToReject = null;
+                _rejectionReason = string.Empty;
+                ToastService.ShowSuccess($"Listing \u201c{title}\u201d has been rejected and the seller notified.", "Listing Rejected");
+            }
             else
-                ToastService.ShowError("Rejection failed. Check the browser console for details.", "Rejection Failed");
+            {
+                ToastService.ShowError($"rejectListing refused the request: {DescribeFailure(result)}", "Rejection Failed");
+            }
         }
         finally
         {
@@ -801,48 +1000,19 @@
         }
     }
 
-    private void PromptUnpublish(MarketplaceListing listing)
+    private static string DescribeFailure(FunctionResult result) => result.ErrorCode switch
     {
-        _selectedListingToUnpublish = listing;
-    }
-
-    private async Task ConfirmUnpublish()
-    {
-        if (_selectedListingToUnpublish == null) return;
-
-        var id = _selectedListingToUnpublish.Id;
-        var title = _selectedListingToUnpublish.Title;
-        _processingListingId = id;
-        StateHasChanged();
-
-        try
-        {
-            var success = await FirestoreService.UnpublishListingAsync(id);
-            _selectedListingToUnpublish = null;
-
-            if (success)
-                ToastService.ShowSuccess($"Listing \u201c{title}\u201d has been unpublished.", "Listing Unpublished");
-            else
-                ToastService.ShowError("Unpublish failed. The Firestore rules may not allow direct status writes. Check the browser console.", "Unpublish Failed");
-        }
-        finally
-        {
-            _processingListingId = string.Empty;
-            StateHasChanged();
-        }
-    }
-
-    private async Task TogglePin(MarketplaceListing listing)
-    {
-        listing.IsPinned = !listing.IsPinned;
-        ToastService.ShowInfo($"Priority Pin status toggled for item #{listing.Id}", "Manual Override");
-        await Task.CompletedTask;
-    }
+        "permission-denied" => "this account lacks the admin custom claim. Sign out and back in after it is granted.",
+        "unauthenticated" => "your session expired. Sign in again.",
+        "not-found" => "the function or listing was not found.",
+        _ => string.IsNullOrWhiteSpace(result.ErrorMessage) ? "unknown error." : result.ErrorMessage
+    };
 
     public void Dispose()
     {
         FirestoreService.OnListingsUpdated -= HandleUpdate;
         FirestoreService.OnPendingListingsUpdated -= HandleUpdate;
+        FirestoreService.OnAllListingsUpdated -= HandleUpdate;
         FirestoreService.OnAllUsersUpdated -= HandleUpdate;
     }
 }

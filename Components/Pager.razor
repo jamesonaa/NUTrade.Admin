@@ -1,0 +1,70 @@
+@* Page controls for a list sliced with PageState.Slice; place it after the list so the page is already clamped. *@
+
+@if (TotalCount > 0)
+{
+    var totalPages = State.TotalPages(TotalCount);
+    var first = (State.Page - 1) * State.Size + 1;
+    var last = Math.Min(State.Page * State.Size, TotalCount);
+
+    <div class="nu-pager">
+        <div class="nu-pager-info">Showing @first–@last of @TotalCount</div>
+        <div class="nu-pager-controls">
+            <select class="nu-select nu-pager-size" value="@State.Size" @onchange="ChangeSize" aria-label="Rows per page">
+                @foreach (var size in PageState.SizeOptions)
+                {
+                    <option value="@size">@size per page</option>
+                }
+            </select>
+            <button type="button" class="btn-nu-outline nu-pager-btn" disabled="@(State.Page <= 1)" @onclick="() => GoTo(State.Page - 1)">Previous</button>
+            @foreach (var page in PageNumbers(totalPages))
+            {
+                if (page == 0)
+                {
+                    <span class="nu-pager-gap">…</span>
+                }
+                else
+                {
+                    var target = page;
+                    <button type="button"
+                            class="@(target == State.Page ? "btn-nu-navy" : "btn-nu-outline") nu-pager-btn"
+                            aria-current="@(target == State.Page ? "page" : null)"
+                            @onclick="() => GoTo(target)">
+                        @target
+                    </button>
+                }
+            }
+            <button type="button" class="btn-nu-outline nu-pager-btn" disabled="@(State.Page >= totalPages)" @onclick="() => GoTo(State.Page + 1)">Next</button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public PageState State { get; set; } = default!;
+    [Parameter] public int TotalCount { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private Task GoTo(int page)
+    {
+        State.GoTo(page);
+        return Changed.InvokeAsync();
+    }
+
+    private Task ChangeSize(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var size)) State.SetSize(size);
+        return Changed.InvokeAsync();
+    }
+
+    // First, last and the pages around the current one; 0 marks a gap.
+    private IEnumerable<int> PageNumbers(int totalPages)
+    {
+        var previous = 0;
+        for (var page = 1; page <= totalPages; page++)
+        {
+            if (page != 1 && page != totalPages && Math.Abs(page - State.Page) > 1) continue;
+            if (previous != 0 && page - previous > 1) yield return 0;
+            yield return page;
+            previous = page;
+        }
+    }
+}

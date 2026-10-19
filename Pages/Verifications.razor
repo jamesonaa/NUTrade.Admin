@@ -19,7 +19,7 @@
             <div>
                 <h4 style="margin: 0 0 0.35rem; color: var(--nu-navy-primary); font-weight: 700; font-size: 0.98rem;">Automated OTP Verification Active</h4>
                 <p style="margin: 0; color: #1E3A8A; font-size: 0.85rem; line-height: 1.5;">
-                    Manual admin approval for new student accounts is disabled. Student registration is now fully automated via OTP verification in the mobile app. You can inspect registered users in <a href="admin/users" style="color: var(--nu-navy-primary); font-weight: 700; text-decoration: underline;">Users Management</a>.
+                    Manual admin approval for new student accounts is disabled. Student registration is now fully automated via OTP verification in the mobile app. You can inspect registered users in <a href="admin/users" style="color: var(--nu-navy-primary); font-weight: 700; text-decoration: underline;">Users Management</a>. This page is read-only; verification is revoked or restored from Users Management through the setUserVerification Cloud Function.
                 </p>
             </div>
         </div>
@@ -28,6 +28,7 @@
     <div class="nu-card">
         @{
             var rows = FilteredVerifications.ToList();
+            var pageRows = _page.Slice(rows);
         }
         <div class="vu-toolbar">
             <div class="vu-search">
@@ -37,9 +38,10 @@
                 </svg>
                 <input type="text"
                        class="nu-input"
-                       placeholder="Search by name or email..."
+                       placeholder="Search by name, email, or UID..."
                        @bind="_searchFilter"
-                       @bind:event="oninput" />
+                       @bind:event="oninput"
+                       @bind:after="_page.Reset" />
             </div>
             <div class="vu-sort-hint">
                 @if (!string.IsNullOrWhiteSpace(_searchFilter))
@@ -47,14 +49,17 @@
                     <span>@rows.Count result@(rows.Count == 1 ? "" : "s")</span>
                     <span style="opacity: 0.4;">·</span>
                 }
-                <span>Sorted by registration time</span>
+                <select class="nu-select" @bind="_sortOrder" @bind:after="_page.Reset" aria-label="Sort by registration time">
+                    <option value="newest">Newest first</option>
+                    <option value="oldest">Oldest first</option>
+                </select>
             </div>
         </div>
 
         @if (rows.Count > 0)
         {
             <div class="vu-list">
-                @foreach (var student in rows)
+                @foreach (var student in pageRows)
                 {
                     var submitted = student.SubmittedAt ?? student.CreatedAt;
                     <div class="vu-row">
@@ -78,33 +83,16 @@
 
                         <div class="vu-time">
                             <div class="vu-time-rel">@FormatRelative(submitted)</div>
-                            <div class="vu-time-abs">@submitted.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt")</div>
+                            <div class="vu-time-abs">@(submitted.HasValue ? submitted.Value.ToLocalTime().ToString("MMM dd, yyyy · hh:mm tt") : "Date not recorded")</div>
                         </div>
 
                         <div class="vu-actions">
-                            <button type="button"
-                                    class="btn-nu-success"
-                                    @onclick="() => DirectApprove(student)"
-                                    disabled="@(_processingUid == student.Uid)">
-                                @if (_processingUid == student.Uid)
-                                {
-                                    <span>…</span>
-                                }
-                                else
-                                {
-                                    <span>Approve</span>
-                                }
-                            </button>
-                            <button type="button"
-                                    class="btn-nu-danger"
-                                    @onclick="() => OpenRejectModal(student)"
-                                    disabled="@(_processingUid == student.Uid)">
-                                Reject
-                            </button>
+                            <StatusBadge Status="@student.VerificationStatus" Kind="verification" />
                         </div>
                     </div>
                 }
             </div>
+            <Pager State="_page" TotalCount="rows.Count" Changed="StateHasChanged" />
         }
         else
         {
@@ -129,59 +117,10 @@
     </div>
 </div>
 
-@if (_studentToReject != null)
-{
-    <div class="nu-modal-backdrop" @onclick="CloseRejectModal">
-        <div class="nu-modal-card" style="max-width: 460px;" @onclick:stopPropagation="true">
-            <div class="nu-modal-header" style="background: var(--nu-danger-bg);">
-                <div class="vu-modal-student">
-                    <div class="vu-modal-avatar">
-                        @(_studentToReject.DisplayName.Length > 0 ? _studentToReject.DisplayName[0].ToString().ToUpper() : "?")
-                    </div>
-                    <div>
-                        <div style="font-size: 0.7rem; font-weight: 700; color: var(--nu-danger); text-transform: uppercase; letter-spacing: 0.04em;">
-                            Reject email verification
-                        </div>
-                        <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--nu-navy-primary); margin: 0.1rem 0 0;">
-                            @_studentToReject.DisplayName
-                        </h3>
-                        <div style="font-size: 0.8rem; color: var(--nu-text-muted);">@_studentToReject.Email</div>
-                    </div>
-                </div>
-                <button type="button" class="btn-nu-outline" style="padding: 0.25rem 0.55rem;" @onclick="CloseRejectModal">✕</button>
-            </div>
-
-            <div class="nu-modal-body">
-                <label class="nu-label">Rejection reason <span style="font-weight: 500; color: var(--nu-text-muted);">(optional)</span></label>
-                <input type="text"
-                       class="nu-input"
-                       placeholder="e.g. Invalid personal email, duplicate account..."
-                       @bind="_rejectionReason" />
-                <p style="font-size: 0.75rem; color: var(--nu-text-muted); margin: 0.6rem 0 0; line-height: 1.4;">
-                    If provided, this reason can be shown to the student.
-                </p>
-            </div>
-
-            <div class="nu-modal-footer">
-                <button type="button" class="btn-nu-outline" @onclick="CloseRejectModal">Cancel</button>
-                <button type="button"
-                        class="btn-nu-danger"
-                        style="background: var(--nu-danger); color: white; border-color: var(--nu-danger);"
-                        @onclick="ConfirmReject"
-                        disabled="@_isSubmitting">
-                    @(_isSubmitting ? "Rejecting..." : "Confirm rejection")
-                </button>
-            </div>
-        </div>
-    </div>
-}
-
 @code {
     private string _searchFilter = string.Empty;
-    private string? _processingUid;
-    private bool _isSubmitting = false;
-    private UserProfile? _studentToReject;
-    private string _rejectionReason = string.Empty;
+    private string _sortOrder = "newest";
+    private readonly PageState _page = new();
 
     private IEnumerable<UserProfile> FilteredVerifications
     {
@@ -193,10 +132,12 @@
             {
                 query = query.Where(u =>
                     u.DisplayName.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
-                    u.Email.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase));
+                    u.Email.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                    u.Uid.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase));
             }
 
-            return query.OrderByDescending(u => u.SubmittedAt ?? u.CreatedAt);
+            Func<UserProfile, DateTime> submitted = u => u.SubmittedAt ?? u.CreatedAt ?? DateTime.MinValue;
+            return _sortOrder == "oldest" ? query.OrderBy(submitted) : query.OrderByDescending(submitted);
         }
     }
 
@@ -222,42 +163,16 @@
 
     private void HandleUpdate() => InvokeAsync(StateHasChanged);
 
-    private async Task DirectApprove(UserProfile student)
-    {
-        _processingUid = student.Uid;
-        await FirestoreService.ApproveVerificationAsync(student.Uid);
-        _processingUid = null;
-    }
-
-    private void OpenRejectModal(UserProfile student)
-    {
-        _studentToReject = student;
-        _rejectionReason = string.Empty;
-    }
-
-    private void CloseRejectModal()
-    {
-        _studentToReject = null;
-        _rejectionReason = string.Empty;
-    }
-
-    private async Task ConfirmReject()
-    {
-        if (_studentToReject == null) return;
-        _isSubmitting = true;
-        bool ok = await FirestoreService.RejectVerificationAsync(_studentToReject.Uid, _rejectionReason);
-        if (ok) CloseRejectModal();
-        _isSubmitting = false;
-    }
-
     private static string TruncateUid(string uid)
     {
         if (string.IsNullOrEmpty(uid)) return "—";
         return uid.Length <= 16 ? uid : $"{uid[..16]}…";
     }
 
-    private static string FormatRelative(DateTime dt)
+    private static string FormatRelative(DateTime? value)
     {
+        if (!value.HasValue) return "—";
+        var dt = value.Value;
         var local = dt.Kind == DateTimeKind.Unspecified
             ? DateTime.SpecifyKind(dt, DateTimeKind.Utc).ToLocalTime()
             : dt.ToLocalTime();

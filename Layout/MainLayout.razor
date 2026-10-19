@@ -68,6 +68,7 @@ else
             var path = relative.Split('?')[0].Trim('/');
             return string.IsNullOrEmpty(path) ||
                    path.Equals("login", StringComparison.OrdinalIgnoreCase) ||
+                   path.Equals("forgot-password", StringComparison.OrdinalIgnoreCase) ||
                    path.Equals("security-verification", StringComparison.OrdinalIgnoreCase);
         }
     }

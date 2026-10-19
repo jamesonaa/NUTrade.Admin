@@ -92,6 +92,20 @@ public class MarketplaceListing
     [JsonPropertyName("createdAt")]
     public DateTime? CreatedAt { get; set; }
 
+    // Set when the fee is settled or the free post claimed and the listing enters the queue.
+    [JsonPropertyName("submittedForApprovalAt")]
+    public DateTime? SubmittedForApprovalAt { get; set; }
+
+    [JsonPropertyName("condition")]
+    public string Condition { get; set; } = string.Empty;
+
+    [JsonPropertyName("campusZone")]
+    public string CampusZone { get; set; } = string.Empty;
+
+    // Set by closeExpiredAuctions when an auction is awarded to its top bid.
+    [JsonPropertyName("winnerUid")]
+    public string WinnerUid { get; set; } = string.Empty;
+
     public TimeSpan RemainingTime => AuctionEndsAt.HasValue && AuctionEndsAt.Value > DateTime.UtcNow
         ? AuctionEndsAt.Value - DateTime.UtcNow
         : TimeSpan.Zero;
@@ -100,12 +114,11 @@ public class MarketplaceListing
     // ------------------------------------------------------------------
     // Payment gate.
     //
-    // Source of truth is the listing document itself. paymongoWebhook
-    // (functions/index.js) writes paymentStatus:'paid' + paidAt and moves the
-    // listing pending_payment -> pending_approval only after PayMongo confirms.
-    // A paid record in /payments (joined on listingId by firebaseInterop.js)
-    // is also accepted. Nothing here infers "paid" from a package name or an
-    // amount - an unverified listing stays Unpaid.
+    // paymentStatus is resolved in firebaseInterop.js from the listing's
+    // payments/{id} record (joined on listingId) or, failing that, from
+    // paidPackage, which the app's functions stamp only once the fee is settled
+    // or the free first post is claimed. Nothing here infers "paid" from a
+    // package name or an amount - an unverified listing stays Unpaid.
     // ------------------------------------------------------------------
 
     private static readonly string[] PaidStates =

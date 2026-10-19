@@ -1,0 +1,55 @@
+@implements IDisposable
+
+@if (!EndsAt.HasValue)
+{
+    <span style="font-weight: 700; font-size: 0.84rem; color: var(--nu-text-muted);">No end time</span>
+}
+else if (_remaining <= TimeSpan.Zero)
+{
+    <span style="font-weight: 700; font-size: 0.84rem; color: var(--nu-text-muted);">Ended</span>
+}
+else
+{
+    <span class="nu-mono" style="font-weight: 700; font-size: 0.84rem; color: @(_remaining.TotalHours < 3 ? "var(--nu-danger)" : "var(--nu-navy-primary)");">
+        @($"{(int)_remaining.TotalHours:D2}:{_remaining.Minutes:D2}:{_remaining.Seconds:D2}")
+    </span>
+}
+
+@code {
+    [Parameter] public DateTime? EndsAt { get; set; }
+
+    private TimeSpan _remaining;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnParametersSet()
+    {
+        _remaining = Remaining();
+        _timer?.Dispose();
+        _timer = null;
+        if (_remaining > TimeSpan.Zero)
+        {
+            _timer = new System.Threading.Timer(_ => Tick(), null, 1000, 1000);
+        }
+    }
+
+    private TimeSpan Remaining()
+    {
+        if (!EndsAt.HasValue) return TimeSpan.Zero;
+        var end = EndsAt.Value.Kind == DateTimeKind.Local ? EndsAt.Value.ToUniversalTime() : EndsAt.Value;
+        var left = end - DateTime.UtcNow;
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+    }
+
+    private void Tick()
+    {
+        _remaining = Remaining();
+        if (_remaining <= TimeSpan.Zero)
+        {
+            _timer?.Dispose();
+            _timer = null;
+        }
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

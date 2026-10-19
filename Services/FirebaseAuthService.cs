@@ -21,7 +21,6 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
     public bool IsAuthenticated => _currentUser != null && _currentUser.IsAdmin && _currentUser.IsVerified && _currentUser.EmailVerified;
     public bool IsSecurityVerified => IsAuthenticated && _isSecurityVerified;
     public DateTime? SecurityCodeExpiresAt => _securityCodeExpiresAt;
-    public string? LastGeneratedCode => _lastGeneratedCode;
     public event Action? OnAuthStateChanged;
 
     public FirebaseAuthService(IJSRuntime jsRuntime, ToastService toastService, IFirestoreService firestoreService)
@@ -192,7 +191,7 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
             // Store codeHash and expiration in Firestore admin_security_codes/{uid}
             await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.saveSecurityCodeHash", _currentUser.Uid, codeHash, _securityCodeExpiresAt.Value.ToString("o"));
             
-            // Dispatch notification to admin email / log (catch failure gracefully if EmailJS fails)
+            // The code reaches the admin only by email; it is never shown in the UI.
             try
             {
                 await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.sendSecurityCodeEmail", _currentUser.Email, randomCode);
@@ -200,9 +199,10 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
             catch (Exception emailEx)
             {
                 Console.WriteLine($"[NUTrade] EmailJS send exception: {emailEx.Message}");
+                const string emailFailed = "The security code email could not be sent. Select Resend code to try again.";
+                _toastService.ShowError(emailFailed, "Email Not Sent");
+                return new SecurityVerificationResult { Success = false, ErrorMessage = emailFailed };
             }
-
-            _toastService.ShowInfo($"Security Code: {randomCode} (Sent to {_currentUser.Email})", "Security Code Generated");
 
             return new SecurityVerificationResult
             {
@@ -231,24 +231,17 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
 
         string trimmedCode = enteredCode.Trim();
 
-        // Master dev bypass code fallback
-        if (trimmedCode == "123456" || (!string.IsNullOrEmpty(_lastGeneratedCode) && trimmedCode == _lastGeneratedCode))
-        {
-            _isSecurityVerified = true;
-            _securityCodeExpiresAt = null;
-            _lastGeneratedCode = null;
-
-            _dotNetRef ??= DotNetObjectReference.Create(this);
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.saveSession", _currentUser, true);
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.startInactivityTracker", _dotNetRef);
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.deleteSecurityCodeHash", _currentUser.Uid);
-
-            return new SecurityVerificationResult { Success = true };
-        }
-
         if (_securityCodeExpiresAt == null || DateTime.UtcNow > _securityCodeExpiresAt.Value)
         {
             return new SecurityVerificationResult { Success = false, IsExpired = true, ErrorMessage = "This security code has expired. A new code is now required." };
+        }
+
+        // The code emailed this session. Checked first because the shared rules may not
+        // permit the admin_security_codes record the Firestore check below relies on.
+        if (!string.IsNullOrEmpty(_lastGeneratedCode) &&
+            CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(trimmedCode), Encoding.UTF8.GetBytes(_lastGeneratedCode)))
+        {
+            return await CompleteSecurityVerificationAsync();
         }
 
         try
@@ -278,29 +271,31 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
                 return new SecurityVerificationResult { Success = false, ErrorMessage = "Invalid security code. Please try again." };
             }
 
-            // Code is VALID & NOT EXPIRED -> Mark session security verified!
-            _isSecurityVerified = true;
-            _securityCodeExpiresAt = null;
-            _lastGeneratedCode = null;
-
-            // Persist verified admin session to localStorage & start 5-min inactivity tracker
-            _dotNetRef ??= DotNetObjectReference.Create(this);
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.saveSession", _currentUser, true);
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.startInactivityTracker", _dotNetRef);
-
-            // Delete code record in Firestore
-            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.deleteSecurityCodeHash", _currentUser.Uid);
-
-            OnAuthStateChanged?.Invoke();
-            _toastService.ShowSuccess("Admin Security Verification Successful!", "Access Granted");
-
-            return new SecurityVerificationResult { Success = true };
+            return await CompleteSecurityVerificationAsync();
         }
         catch (Exception ex)
         {
             _toastService.ShowError($"Unable to verify security code: {ex.Message}", "Error");
             return new SecurityVerificationResult { Success = false, ErrorMessage = "Unable to verify the security code. Please try again." };
         }
+    }
+
+    private async Task<SecurityVerificationResult> CompleteSecurityVerificationAsync()
+    {
+        _isSecurityVerified = true;
+        _securityCodeExpiresAt = null;
+        _lastGeneratedCode = null;
+
+        // Persist verified admin session to localStorage & start 5-min inactivity tracker
+        _dotNetRef ??= DotNetObjectReference.Create(this);
+        await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.saveSession", _currentUser, true);
+        await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.startInactivityTracker", _dotNetRef);
+        await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.deleteSecurityCodeHash", _currentUser!.Uid);
+
+        OnAuthStateChanged?.Invoke();
+        _toastService.ShowSuccess("Admin Security Verification Successful!", "Access Granted");
+
+        return new SecurityVerificationResult { Success = true };
     }
 
     public async Task<bool> ResendEmailVerificationAsync(string? email = null)
@@ -360,6 +355,35 @@ public class FirebaseAuthService : IFirebaseAuthService, IDisposable
     public Task<UserProfile?> GetCurrentProfileAsync()
     {
         return Task.FromResult(_currentUser);
+    }
+
+    public Task<FunctionResult> StartPasswordResetAsync(string email) =>
+        CallAuthFunctionAsync("startPasswordReset", new { email = email.Trim() });
+
+    public Task<FunctionResult> VerifyPasswordResetCodeAsync(string email, string code) =>
+        CallAuthFunctionAsync("verifyPasswordResetCode", new { email = email.Trim(), code = code.Trim() });
+
+    public Task<FunctionResult> CompletePasswordResetAsync(string email, string resetToken, string password) =>
+        CallAuthFunctionAsync("completePasswordReset", new
+        {
+            email = email.Trim(),
+            resetToken,
+            password
+        });
+
+    private async Task<FunctionResult> CallAuthFunctionAsync(string name, object payload)
+    {
+        try
+        {
+            await _jsRuntime.InvokeVoidAsync("NUTradeFirebase.initFirebase");
+            return await _jsRuntime.InvokeAsync<FunctionResult>("NUTradeFirebase.callAppFunction", name, payload, false)
+                   ?? FunctionResult.Failure("No response from the server.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FirebaseAuthService] {name} failed: {ex.Message}");
+            return FunctionResult.Failure("The request could not be completed. Check your connection and try again.");
+        }
     }
 
     public void Dispose()

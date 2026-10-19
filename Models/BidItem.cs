@@ -22,6 +22,13 @@ public class BidItem
     [JsonPropertyName("amount")]
     public decimal Amount { get; set; }
 
+    // Null when the bid document records no time; never defaulted to "now".
     [JsonPropertyName("timestamp")]
-    public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public DateTime? Timestamp { get; set; }
+
+    // Maintained by placeBid / approveBid / declineBid / withdrawBid.
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
 }
+
+public sealed record BidLoadResult(bool Success, List<BidItem> Bids, string? Error);

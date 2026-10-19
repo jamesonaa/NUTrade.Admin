@@ -1,7 +1,11 @@
 /**
  * NUTrade Admin Web Portal - Firebase JavaScript Interop Layer
  * Encapsulates Firebase Authentication, Cloud Firestore Realtime Listeners,
- * and Firebase Storage URL resolution.
+ * callable Cloud Functions and Firebase Storage URL resolution.
+ *
+ * Every value surfaced to the admin console comes from project nutrade-a25c7.
+ * When a read fails the console receives an empty list plus an
+ * OnListenerError callback - never sample data.
  */
 
 window.NUTradeFirebase = (function () {
@@ -18,13 +22,15 @@ window.NUTradeFirebase = (function () {
     let isInitialized = false;
     let authInstance = null;
     let dbInstance = null;
-    // Callbacks used by the mock/simulated path
+    let storageInstance = null;
+    // Blazor callbacks per listener key, used to re-attach listeners after auth changes
     let activeSubscriptions = new Map();
     // Live Firestore onSnapshot unsubscribe functions (key -> unsub)
     let liveUnsubscribers = new Map();
     let livePaymentsMap = new Map();
     let pendingListingsSub = null;
     let activeListingsSub = null;
+    let allListingsSub = null;
     let isPaymentsListenerActive = false;
     let inactivityInterval = null;
     let inactivityDotNetHelper = null;
@@ -109,12 +115,118 @@ window.NUTradeFirebase = (function () {
         return out;
     }
 
+    function asText(value) {
+        if (typeof value === "string") return value.trim();
+        if (typeof value === "number" && isFinite(value)) return String(value);
+        return "";
+    }
+
+    // ---------------------------------------------------------------
+    // Payments helpers
+    // ---------------------------------------------------------------
+
+    // payments/{id}.status: awaiting_payment, paid, failed or expired (createQrPayment,
+    // settleListingFee, paymongoWebhook, expireStalePayments).
+    function isPaidStatus(status) {
+        return (status || "").toString().trim().toLowerCase() === "paid";
+    }
+
+    // A payment counts as settled only when its status says so, or - for records
+    // that carry no status - when paymongoWebhook stamped paidAt.
+    function isPaidPayment(p) {
+        if (!p) return false;
+        if (p.status) return isPaidStatus(p.status);
+        return !!p.paidAt;
+    }
+
+    // createQrPayment stores payments/{id}.amount in centavos.
+    function paymentAmountPesos(p) {
+        return (Number(p.amount) || 0) / 100;
+    }
+
+    function numberValue(value) {
+        const n = Number(value);
+        return isFinite(n) ? n : 0;
+    }
+
+    // Stored package names are Free / Additional / Priority.
+    function packageLabel(raw) {
+        const text = asText(raw);
+        const lower = text.toLowerCase();
+        if (!text) return "";
+        if (lower.includes("priority")) return "Priority Pin";
+        if (lower.includes("additional") || lower.includes("standard")) return "Standard Post";
+        if (lower.includes("free")) return "Free";
+        return text;
+    }
+
+    const REVENUE_DESK_KEYS = ["revenueCounter", "revenueTransactions", "forfeitedDeposits", "payoutQueue", "disputeQueue"];
+
+    // ---------------------------------------------------------------
+    // Storage photo resolution
+    // ---------------------------------------------------------------
+
+    // Listing photos may be stored as download URLs or as Storage paths
+    // (gs://bucket/... or listings/{id}/photo.jpg). Paths are resolved once and
+    // cached; the listing snapshots are re-emitted when a URL arrives.
+    const storageUrlCache = new Map();
+    let storageReprocessTimer = null;
+
+    function photoPath(p) {
+        if (typeof p === "string") return p.trim();
+        if (p && typeof p === "object") {
+            const keys = ["url", "downloadUrl", "downloadURL", "src", "imageUrl", "path", "storagePath", "fullPath"];
+            for (const k of keys) {
+                if (typeof p[k] === "string" && p[k].trim()) return p[k].trim();
+            }
+        }
+        return "";
+    }
+
+    function resolvePhotoUrl(raw) {
+        const path = photoPath(raw);
+        if (!path) return "";
+        if (/^(https?:|data:|blob:)/i.test(path)) return path;
+        if (storageUrlCache.has(path)) return storageUrlCache.get(path);
+        if (!storageInstance) return "";
+
+        storageUrlCache.set(path, "");
+        let ref;
+        try {
+            ref = path.toLowerCase().startsWith("gs://")
+                ? storageInstance.refFromURL(path)
+                : storageInstance.ref(path.replace(/^\/+/, ""));
+        } catch (err) {
+            console.warn("NUTrade: invalid Storage photo path '" + path + "' -", err.message || err);
+            return "";
+        }
+
+        ref.getDownloadURL().then(url => {
+            storageUrlCache.set(path, url);
+            if (storageReprocessTimer) clearTimeout(storageReprocessTimer);
+            storageReprocessTimer = setTimeout(() => {
+                storageReprocessTimer = null;
+                reprocessAndPublishListings();
+            }, 250);
+        }).catch(err => {
+            console.warn("NUTrade: could not resolve Storage photo '" + path + "' -", err.code || err.message || err);
+        });
+        return "";
+    }
+
+    // ---------------------------------------------------------------
+    // Listings normalization
+    // ---------------------------------------------------------------
+
     function reprocessAndPublishListings() {
         if (pendingListingsSub && pendingListingsSub.snap) {
-            processAndEmitPendingListings(pendingListingsSub.snap, pendingListingsSub.dotNetHelper, pendingListingsSub.methodName);
+            processAndEmitListings(pendingListingsSub.snap, pendingListingsSub.dotNetHelper, pendingListingsSub.methodName, true);
         }
         if (activeListingsSub && activeListingsSub.snap) {
-            processAndEmitActiveListings(activeListingsSub.snap, activeListingsSub.dotNetHelper, activeListingsSub.methodName);
+            processAndEmitListings(activeListingsSub.snap, activeListingsSub.dotNetHelper, activeListingsSub.methodName, false);
+        }
+        if (allListingsSub && allListingsSub.snap) {
+            processAndEmitListings(allListingsSub.snap, allListingsSub.dotNetHelper, allListingsSub.methodName, false);
         }
     }
 
@@ -124,6 +236,10 @@ window.NUTradeFirebase = (function () {
         data.id = d.id;
         data.sellerUid = data.sellerUid || data.ownerUid || data.userId || data.createdBy || data.uid || "";
 
+        // paidPackage is stamped only by createQrPayment (free first post) and
+        // settleListingFee (PayMongo-confirmed fee), so it is proof of settlement.
+        const stampedPkg = asText(rawData.paidPackage).toLowerCase();
+
         ensurePaymentsListener();
         const payDoc = livePaymentsMap.get(d.id);
         if (payDoc) {
@@ -132,27 +248,21 @@ window.NUTradeFirebase = (function () {
             }
             // Use the real status on the /payments record. Never default to "paid".
             data.paymentStatus = (payDoc.status || rawData.paymentStatus || "").toString().trim().toLowerCase();
+            if (!data.paymentStatus && payDoc.paid) data.paymentStatus = "paid";
+            // An expired QR attempt does not outweigh a fee or free post settled later.
+            if (!payDoc.paid && stampedPkg) data.paymentStatus = stampedPkg === "free" ? "free" : "paid";
             data.paymentId = payDoc.paymentId || "";
             data.payMongoIntentId = payDoc.payMongoIntentId || "";
-            const pkgStr = (payDoc.package || "").toString().toLowerCase();
-            const payAmt = Number(payDoc.amount) || 0;
-            if (pkgStr.includes("priority") || payAmt === 20 || payAmt === 2000) {
-                data.paidPackage = "Priority Pin";
-                data.isPinned = true;
-            } else if (pkgStr.includes("additional") || pkgStr.includes("standard") || payAmt === 10 || payAmt === 1000) {
-                data.paidPackage = "Standard Post";
-            }
         } else {
-            // No /payments record joined on listingId. Never assume the fee was
-            // settled - derive only from what the listing document itself states.
-            // paymongoWebhook writes paymentStatus:'paid' + paidAt on the listing,
-            // so those are the authoritative proof of payment.
+            // No /payments record joined on listingId (Free posts never create one).
             const rawPayStatus = (rawData.paymentStatus || "").toString().trim().toLowerCase();
             const rawStatus = (rawData.status || "").toString().trim().toLowerCase();
             const rawPkg0 = (rawData.paidPackage || rawData.package || rawData.packageType || "")
                 .toString().trim().toLowerCase();
 
-            if (rawPayStatus) {
+            if (stampedPkg) {
+                data.paymentStatus = stampedPkg === "free" ? "free" : "paid";
+            } else if (rawPayStatus) {
                 data.paymentStatus = rawPayStatus;
             } else if (rawData.paidAt) {
                 data.paymentStatus = "paid";
@@ -172,7 +282,10 @@ window.NUTradeFirebase = (function () {
 
         data.title = data.title || data.name || data.itemName || data.productName || data.itemTitle || "Untitled Listing";
         data.description = data.description || data.desc || data.details || "";
-        data.category = data.category || data.itemCategory || "General";
+        data.category = data.category || data.itemCategory || data.categoryOther || "General";
+        data.condition = asText(rawData.condition);
+        data.campusZone = asText(rawData.campusZone);
+        data.winnerUid = asText(rawData.winnerUid || rawData.winningBidderUid || rawData.buyerUid);
 
         // Handle Centavos (mobile app format) vs Pesos (admin format)
         const startCentavos = data.startingBidCentavos ?? data.startingPriceCentavos ?? data.priceCentavos ?? null;
@@ -193,14 +306,15 @@ window.NUTradeFirebase = (function () {
             : Number(data.reservePrice || data.minPrice || 0);
         data.reservePrice = resPesos;
 
-        data.totalBids = Number(data.totalBids ?? data.bidCount ?? 0);
-        data.createdAt = data.createdAt || data.timestamp || data.dateCreated || new Date().toISOString();
+        data.totalBids = Number(data.totalBids ?? data.bidCount ?? 0) || 0;
+        data.createdAt = data.createdAt || data.timestamp || data.dateCreated || data.submittedForApprovalAt || null;
 
         data.sellerName = data.sellerName || data.ownerName || data.userName || data.displayName || "";
         data.sellerEmail = data.sellerEmail || data.ownerEmail || data.userEmail || data.email || "";
 
-        // Map package to standard names: "Priority Pin", "Standard Post", "Free"
-        const rawPkg = (data.package || data.packageType || data.paidPackage || "").toString().trim().toLowerCase();
+        // Map package to standard names: "Priority Pin", "Standard Post", "Free".
+        // paidPackage is what was actually settled; `package` is only the draft's choice.
+        const rawPkg = (rawData.paidPackage || rawData.package || rawData.packageType || "").toString().trim().toLowerCase();
         if (rawPkg.includes("priority") || data.isPinned || data.isPriority) {
             data.paidPackage = "Priority Pin";
             data.isPinned = true;
@@ -223,36 +337,31 @@ window.NUTradeFirebase = (function () {
             }
         }
 
-        // Photos normalization - guarantee a List<string> array for .NET deserialization
-        if (!Array.isArray(data.photos)) {
-            if (data.photos && typeof data.photos === "object") {
-                data.photos = Object.values(data.photos).filter(p => typeof p === "string");
-            } else if (data.images && Array.isArray(data.images)) {
-                data.photos = data.images;
-            } else if (data.imageUrl && typeof data.imageUrl === "string") {
-                data.photos = [data.imageUrl];
-            } else if (data.photoUrl && typeof data.photoUrl === "string") {
-                data.photos = [data.photoUrl];
-            } else {
-                data.photos = [];
-            }
+        // Photos normalization - guarantee a List<string> of displayable URLs
+        let photos;
+        if (Array.isArray(data.photos)) {
+            photos = data.photos;
+        } else if (data.photos && typeof data.photos === "object") {
+            photos = Object.values(data.photos);
+        } else if (Array.isArray(data.images)) {
+            photos = data.images;
+        } else if (data.imageUrl) {
+            photos = [data.imageUrl];
+        } else if (data.photoUrl) {
+            photos = [data.photoUrl];
+        } else {
+            photos = [];
         }
+        data.photos = photos.map(resolvePhotoUrl).filter(Boolean);
+        data.imageUrl = data.photos.length ? data.photos[0] : "";
 
         return data;
     }
 
-    function processAndEmitPendingListings(snap, dotNetHelper, methodName) {
+    function processAndEmitListings(docs, dotNetHelper, methodName, isPending) {
         const list = [];
-        snap.forEach(d => {
-            list.push(normalizeListingDoc(d, true));
-        });
-        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-    }
-
-    function processAndEmitActiveListings(snap, dotNetHelper, methodName) {
-        const list = [];
-        snap.forEach(d => {
-            list.push(normalizeListingDoc(d, false));
+        docs.forEach(d => {
+            list.push(normalizeListingDoc(d, isPending));
         });
         dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
     }
@@ -272,330 +381,30 @@ window.NUTradeFirebase = (function () {
                             uid: pData.uid || pData.userId || "",
                             package: pData.package || pData.packageType || "",
                             amount: Number(pData.amount) || 0,
-                            status: pData.status || "paid",
+                            status: pData.status || "",
+                            paid: isPaidPayment(pData),
                             createdAt: pData.paidAt || pData.createdAt || ""
                         };
                         if (pData.listingId) {
-                            livePaymentsMap.set(pData.listingId, payObj);
+                            // A listing can have several QR attempts; the settled one wins.
+                            const existing = livePaymentsMap.get(pData.listingId);
+                            if (!existing || !existing.paid || payObj.paid) {
+                                livePaymentsMap.set(pData.listingId, payObj);
+                            }
                         }
                         livePaymentsMap.set("id_" + d.id, payObj);
                     }
                 });
                 console.log("NUTrade: Live payments synced (" + livePaymentsMap.size + " records).");
                 reprocessAndPublishListings();
-            }, err => console.warn("NUTrade payments read warning:", err.message));
+            }, err => {
+                console.warn("NUTrade payments read warning:", err.message);
+                isPaymentsListenerActive = false;
+            });
             storeLiveUnsubscriber("payments_sync", unsub);
         } catch (e) {
+            isPaymentsListenerActive = false;
             console.warn("NUTrade payments listener error:", e);
-        }
-    }
-
-    // Mock state store for development / preview when Firebase SDK is offline or unconfigured
-    let mockState = {
-        currentUser: null,
-        securityCodes: {},
-        metrics: {
-            grossRevenue: 48500.00,
-            totalBidsPlaced: 1428,
-            auctionCompletionRate: 84.6,
-            averageBidsPerItem: 6.4,
-            freeToPaidConversionRate: 38.2,
-            activeListingsCount: 5,
-            pendingVerificationsCount: 4,
-            totalTransactionsCount: 2890,
-            lastUpdated: new Date().toISOString()
-        },
-        pendingVerifications: [
-            {
-                uid: "usr_nu_2024_001",
-                email: "juan.delacruz@gmail.com",
-                displayName: "Juan Dela Cruz",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-03T08:30:00Z",
-                submittedAt: "2026-09-04T07:15:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            },
-            {
-                uid: "usr_nu_2024_002",
-                email: "maria.santos@yahoo.com",
-                displayName: "Maria Santos",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-02T10:00:00Z",
-                submittedAt: "2026-09-04T08:45:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            },
-            {
-                uid: "usr_nu_2024_003",
-                email: "christian.reyes@outlook.com",
-                displayName: "Christian Reyes",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-01T14:20:00Z",
-                submittedAt: "2026-09-04T09:10:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            },
-            {
-                uid: "usr_nu_2024_004",
-                email: "althea.gonzales@gmail.com",
-                displayName: "Althea Gonzales",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-04T02:00:00Z",
-                submittedAt: "2026-09-04T10:05:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            }
-        ],
-        allUsers: [
-            {
-                uid: "usr_nu_2024_001",
-                email: "juan.delacruz@gmail.com",
-                displayName: "Juan Dela Cruz",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-03T08:30:00Z",
-                submittedAt: "2026-09-04T07:15:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            },
-            {
-                uid: "usr_nu_2024_002",
-                email: "maria.santos@yahoo.com",
-                displayName: "Maria Santos",
-                role: "student",
-                verificationStatus: "pending",
-                photoUrl: "",
-                createdAt: "2026-09-02T10:00:00Z",
-                submittedAt: "2026-09-04T08:45:00Z",
-                canPost: false,
-                canBid: false,
-                canChat: false
-            },
-            {
-                uid: "usr_nu_2024_005",
-                email: "carlos.mendoza@gmail.com",
-                displayName: "Carlos Mendoza",
-                role: "student",
-                verificationStatus: "verified",
-                photoUrl: "",
-                createdAt: "2026-09-01T08:30:00Z",
-                submittedAt: "2026-09-01T09:00:00Z",
-                canPost: true,
-                canBid: true,
-                canChat: true
-            }
-        ],
-        listings: [
-            {
-                id: "lst_101",
-                title: "NU-Lipa Varsity Jacket",
-                category: "Other",
-                sellerUid: "usr_nu_2024_001",
-                sellerName: "Juan Dela Cruz",
-                sellerEmail: "delacruz.juan@lipa.nu.edu.ph",
-                currentHighestBid: 1000.00,
-                reservePrice: 800.00,
-                startingPrice: 500.00,
-                status: "active",
-                auctionEndsAt: new Date(Date.now() + 19 * 3600 * 1000 + 59 * 60 * 1000).toISOString(),
-                isPinned: true,
-                imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=400&auto=format&fit=crop&q=80",
-                totalBids: 2,
-                createdAt: "2026-09-03T10:00:00Z"
-            },
-            {
-                id: "lst_102",
-                title: "NU-Lipa Uniform Set (Size M)",
-                category: "Uniforms",
-                sellerUid: "usr_nu_2024_003",
-                sellerName: "Christian Reyes",
-                sellerEmail: "reyes.christian@lipa.nu.edu.ph",
-                currentHighestBid: 450.00,
-                reservePrice: 350.00,
-                startingPrice: 200.00,
-                status: "active",
-                auctionEndsAt: new Date(Date.now() + 38 * 60 * 1000 + 44 * 1000).toISOString(),
-                isPinned: true,
-                imageUrl: "https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=400&auto=format&fit=crop&q=80",
-                totalBids: 8,
-                createdAt: "2026-09-03T14:30:00Z"
-            },
-            {
-                id: "lst_103",
-                title: "NU-Lipa Uniform Set (Size S)",
-                category: "Uniforms",
-                sellerUid: "usr_nu_2024_002",
-                sellerName: "Maria Santos",
-                sellerEmail: "santos.maria@lipa.nu.edu.ph",
-                currentHighestBid: 400.00,
-                reservePrice: 300.00,
-                startingPrice: 200.00,
-                status: "active",
-                auctionEndsAt: new Date(Date.now() + 41 * 60 * 1000 + 3 * 1000).toISOString(),
-                isPinned: false,
-                imageUrl: "https://images.unsplash.com/photo-1594980596870-8aa52a78d8cd?w=400&auto=format&fit=crop&q=80",
-                totalBids: 5,
-                createdAt: "2026-09-02T16:00:00Z"
-            },
-            {
-                id: "lst_104",
-                title: "Fundamentals of Nursing Textbook",
-                category: "Textbooks",
-                sellerUid: "usr_nu_2024_004",
-                sellerName: "Althea Gonzales",
-                sellerEmail: "gonzales.althea@lipa.nu.edu.ph",
-                currentHighestBid: 650.00,
-                reservePrice: 500.00,
-                startingPrice: 350.00,
-                status: "active",
-                auctionEndsAt: new Date(Date.now() + 32 * 60 * 1000 + 37 * 1000).toISOString(),
-                isPinned: false,
-                imageUrl: "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&auto=format&fit=crop&q=80",
-                totalBids: 6,
-                createdAt: "2026-09-04T01:00:00Z"
-            }
-        ],
-        pendingListings: [
-            {
-                id: "lst_pending_201",
-                title: "Calculus & Analytical Geometry (9th Edition)",
-                description: "Pre-loved textbook for engineering students. In excellent condition with clean pages.",
-                category: "Textbooks",
-                sellerUid: "usr_nu_2024_001",
-                sellerName: "Juan Dela Cruz",
-                sellerEmail: "delacruz.juan@lipa.nu.edu.ph",
-                currentHighestBid: 450.00,
-                reservePrice: 400.00,
-                startingPrice: 300.00,
-                status: "pending_approval",
-                paidPackage: "Free",
-                isPinned: false,
-                imageUrl: "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=400&auto=format&fit=crop&q=80",
-                totalBids: 0,
-                createdAt: "2026-09-19T08:30:00Z"
-            },
-            {
-                id: "lst_pending_202",
-                title: "Engineering Scientific Calculator FX-991EX",
-                description: "Original Casio ClassWiz calculator required for Board exams. Battery freshly replaced.",
-                category: "Electronics",
-                sellerUid: "usr_nu_2024_002",
-                sellerName: "Maria Santos",
-                sellerEmail: "santos.maria@lipa.nu.edu.ph",
-                currentHighestBid: 1200.00,
-                reservePrice: 1000.00,
-                startingPrice: 800.00,
-                status: "pending_approval",
-                paidPackage: "Priority Pin",
-                isPinned: true,
-                imageUrl: "https://images.unsplash.com/photo-1611125832047-1d7ad1e8e48a?w=400&auto=format&fit=crop&q=80",
-                totalBids: 0,
-                createdAt: "2026-09-19T09:15:00Z"
-            },
-            {
-                id: "lst_pending_203",
-                title: "Official NU College Hoodie - Size L",
-                description: "Official National University navy blue hoodie jacket. Worn twice, like new.",
-                category: "Uniforms",
-                sellerUid: "usr_nu_2024_003",
-                sellerName: "Christian Reyes",
-                sellerEmail: "reyes.christian@lipa.nu.edu.ph",
-                currentHighestBid: 750.00,
-                reservePrice: 600.00,
-                startingPrice: 500.00,
-                status: "pending_approval",
-                paidPackage: "Standard Post",
-                isPinned: false,
-                imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?w=400&auto=format&fit=crop&q=80",
-                totalBids: 0,
-                createdAt: "2026-09-19T10:00:00Z"
-            }
-        ],
-        transactions: [],
-        bids: {
-            "lst_101": [
-                { id: "bid_01", listingId: "lst_101", bidderUid: "usr_10", bidderName: "Alden Perez", bidderEmail: "perez.a@gmail.com", amount: 850.00, timestamp: "2026-09-04T10:20:00Z" },
-                { id: "bid_02", listingId: "lst_101", bidderUid: "usr_11", bidderName: "Bea Alonzo", bidderEmail: "alonzo.b@gmail.com", amount: 750.00, timestamp: "2026-09-04T09:15:00Z" },
-                { id: "bid_03", listingId: "lst_101", bidderUid: "usr_12", bidderName: "Carlo Tan", bidderEmail: "tan.c@gmail.com", amount: 650.00, timestamp: "2026-09-04T08:00:00Z" },
-                { id: "bid_04", listingId: "lst_101", bidderUid: "usr_10", bidderName: "Alden Perez", bidderEmail: "perez.a@gmail.com", amount: 500.00, timestamp: "2026-09-03T11:00:00Z" }
-            ],
-            "lst_103": [
-                { id: "bid_05", listingId: "lst_103", bidderUid: "usr_15", bidderName: "Dennis Cruz", bidderEmail: "cruz.d@gmail.com", amount: 1250.00, timestamp: "2026-09-04T10:45:00Z" },
-                { id: "bid_06", listingId: "lst_103", bidderUid: "usr_16", bidderName: "Eileen Go", bidderEmail: "go.e@gmail.com", amount: 1100.00, timestamp: "2026-09-04T09:30:00Z" },
-                { id: "bid_07", listingId: "lst_103", bidderUid: "usr_17", bidderName: "Francis Lim", bidderEmail: "lim.f@gmail.com", amount: 950.00, timestamp: "2026-09-03T18:00:00Z" }
-            ]
-        }
-    };
-
-    // Auto simulated PayMongo webhook settlement every 20 seconds to showcase live reactive counter
-    let simulatedWebhookInterval = null;
-
-    function startSimulatedWebhookListener() {
-        if (dbInstance) {
-            if (simulatedWebhookInterval) {
-                clearInterval(simulatedWebhookInterval);
-                simulatedWebhookInterval = null;
-            }
-            return;
-        }
-        if (simulatedWebhookInterval) return;
-        simulatedWebhookInterval = setInterval(() => {
-            // Randomly simulate an Additional Post (₱10) or Priority Pin (₱20) transaction
-            const isPriority = Math.random() > 0.5;
-            const amount = isPriority ? 20.00 : 10.00;
-            const packageType = isPriority ? "Priority Pin" : "Additional Post";
-            const randomId = Math.floor(1000 + Math.random() * 9000);
-
-            mockState.metrics.grossRevenue += amount;
-            mockState.metrics.totalTransactionsCount += 1;
-            mockState.metrics.lastUpdated = new Date().toISOString();
-
-            const newTx = {
-                paymentId: "pay_pm_live_" + randomId,
-                payMongoIntentId: "pi_" + Math.random().toString(36).substring(2, 10),
-                userId: "usr_nu_auto_" + randomId,
-                userEmail: "student" + randomId + "@gmail.com",
-                listingId: "lst_" + (100 + Math.floor(Math.random() * 5)),
-                packageType: packageType,
-                timestamp: new Date().toISOString(),
-                amount: amount,
-                status: "paid"
-            };
-
-            mockState.transactions.unshift(newTx);
-            if (mockState.transactions.length > 50) mockState.transactions.pop();
-
-            // Broadcast to active .NET subscribers
-            notifySubscribers("metrics", mockState.metrics);
-            notifySubscribers("transactions", mockState.transactions);
-        }, 15000);
-    }
-
-    function notifySubscribers(key, data) {
-        if (activeSubscriptions.has(key)) {
-            const subs = activeSubscriptions.get(key);
-            for (const sub of subs) {
-                try {
-                    sub.dotNetHelper.invokeMethodAsync(sub.methodName, JSON.stringify(data));
-                } catch (e) {
-                    console.warn(`Error invoking Blazor callback for ${key}:`, e);
-                }
-            }
         }
     }
 
@@ -625,6 +434,10 @@ window.NUTradeFirebase = (function () {
         }
         liveUnsubscribers.clear();
         activeSubscriptions.clear();
+        isPaymentsListenerActive = false;
+        pendingListingsSub = null;
+        activeListingsSub = null;
+        allListingsSub = null;
     }
 
     function rebindAllActiveListeners() {
@@ -637,6 +450,8 @@ window.NUTradeFirebase = (function () {
                     window.NUTradeFirebase.subscribeToPendingApprovalListings(firstSub.dotNetHelper, firstSub.methodName);
                 } else if (key === "listings") {
                     window.NUTradeFirebase.subscribeToListings(firstSub.dotNetHelper, firstSub.methodName);
+                } else if (key === "allListings") {
+                    window.NUTradeFirebase.subscribeToAllListings(firstSub.dotNetHelper, firstSub.methodName);
                 } else if (key === "verifications") {
                     window.NUTradeFirebase.subscribeToPendingVerifications(firstSub.dotNetHelper, firstSub.methodName);
                 } else if (key === "allUsers") {
@@ -647,6 +462,15 @@ window.NUTradeFirebase = (function () {
                     window.NUTradeFirebase.subscribeToTransactions(firstSub.dotNetHelper, firstSub.methodName);
                 }
             }
+        }
+    }
+
+    function reportListenerError(dotNetHelper, methodName, source, err) {
+        try {
+            dotNetHelper.invokeMethodAsync(methodName, "[]");
+            dotNetHelper.invokeMethodAsync("OnListenerError", source, ((err && err.code) || "") + " " + ((err && err.message) || ""));
+        } catch (e) {
+            console.warn("NUTrade: could not report listener error for " + source, e);
         }
     }
 
@@ -685,9 +509,6 @@ window.NUTradeFirebase = (function () {
                 console.log("  sample doc id:", firstId);
                 console.log("  sample doc fields:", firstKeys);
             }
-            console.log("  NOTE: the admin 'Active' table shows status==='active' only;");
-            console.log("        everything else except rejected/unpublished/deleted/sold/");
-            console.log("        expired/pending_meetup/completed goes to the pending queue.");
             console.log("--------------------------------------------------------");
         } catch (e) {
             console.warn("NUTrade listings diagnostic warning:", e);
@@ -724,8 +545,23 @@ window.NUTradeFirebase = (function () {
         return null;
     }
 
+    function normalizeUserDoc(d) {
+        const data = sanitizeFirestoreData(d.data() || {});
+        data.uid = d.id;
+        data.displayName = data.displayName || data.name || data.fullName || (data.firstName ? (data.firstName + " " + (data.lastName || "")) : "") || data.email || "Student User";
+        data.firstName = data.firstName || (data.displayName ? data.displayName.split(" ")[0] : "") || data.name || "";
+        data.lastName = data.lastName || (data.displayName ? data.displayName.split(" ").slice(1).join(" ") : "") || "";
+        // users/{uid}.program exactly as the app stores it (SACE, SAHS, SABM, SHS);
+        // `program` below falls back to other fields for display only.
+        data.programRaw = asText(data.program);
+        data.program = data.program || data.course || data.department || data.degree || data.major || "";
+        data.photoUrl = data.photoUrl || data.photoURL || data.profileImage || data.avatar || "";
+        data.createdAt = data.createdAt || data.created_at || data.timestamp || data.registeredAt || data.joinedAt || data.submittedAt || data.dateCreated || null;
+        return data;
+    }
+
     return {
-        // Initialize Firebase SDK or fallback simulator
+        // Initialize the Firebase SDK (loaded from index.html)
         initFirebase: async function (config) {
             if (config) firebaseConfig = config;
             try {
@@ -735,35 +571,86 @@ window.NUTradeFirebase = (function () {
                     }
                     authInstance = window.firebase.auth();
                     dbInstance = window.firebase.firestore();
-                    isInitialized = true;
-                    console.log("NUTrade: Firebase SDK initialized successfully for project nutrade-a25c7 on (default) database.");
+                    try {
+                        storageInstance = typeof window.firebase.storage === "function" ? window.firebase.storage() : null;
+                    } catch (storageErr) {
+                        storageInstance = null;
+                        console.warn("NUTrade: Firebase Storage unavailable -", storageErr.message || storageErr);
+                    }
 
-                    authInstance.onAuthStateChanged(user => {
-                        if (user) {
-                            console.log("NUTrade: Auth state active (" + user.email + "). Syncing live Firestore collections.");
-                            rebindAllActiveListeners();
-                        }
-                    });
+                    if (!isInitialized) {
+                        isInitialized = true;
+                        console.log("NUTrade: Firebase SDK initialized for project nutrade-a25c7 on (default) database.");
+
+                        authInstance.onAuthStateChanged(user => {
+                            if (user) {
+                                console.log("NUTrade: Auth state active (" + user.email + "). Syncing live Firestore collections.");
+                                rebindAllActiveListeners();
+                            }
+                        });
+                    }
                 } else {
-                    console.info("NUTrade: Using simulated Firebase client (SDK offline/standalone mode).");
-                    startSimulatedWebhookListener();
+                    console.error("NUTrade: Firebase SDK failed to load. Check the network connection and reload.");
                 }
             } catch (err) {
-                console.warn("NUTrade: Firebase init fallback:", err);
-                startSimulatedWebhookListener();
+                console.error("NUTrade: Firebase init failed:", err);
             }
 
             // Initialize EmailJS for admin security code email delivery
             try {
                 if (typeof emailjs !== "undefined") {
                     emailjs.init("40C3_6SwME3k-0QAs");
-                    console.log("NUTrade: EmailJS initialized.");
                 }
             } catch (ejsErr) {
                 console.warn("NUTrade: EmailJS init warning:", ejsErr);
             }
 
             return true;
+        },
+
+        // Invoke one of the app's callable Cloud Functions (asia-southeast1).
+        // Returns { success, data, errorCode, errorMessage }.
+        callAppFunction: async function (name, payload, forceTokenRefresh) {
+            if (!isInitialized) await this.initFirebase();
+
+            if (forceTokenRefresh && authInstance && authInstance.currentUser) {
+                try {
+                    await authInstance.currentUser.getIdToken(true);
+                } catch (tErr) {
+                    console.warn("NUTrade: getIdToken(true) warning:", tErr);
+                }
+            }
+
+            const callable = getAppCallable(name);
+            if (!callable) {
+                return {
+                    success: false,
+                    data: null,
+                    errorCode: "unavailable",
+                    errorMessage: "Cloud Functions are unavailable. Check the network connection and reload."
+                };
+            }
+
+            try {
+                const res = await callable(payload || {});
+                const data = res && res.data !== undefined ? res.data : null;
+                const rejected = !!data && typeof data === "object" && (data.success === false || data.ok === false);
+                return {
+                    success: !rejected,
+                    data: data && typeof data === "object" ? sanitizeFirestoreData(data) : data,
+                    errorCode: rejected ? "rejected" : null,
+                    errorMessage: rejected ? String(data.message || data.error || "The request was rejected.") : null
+                };
+            } catch (err) {
+                const code = (err && err.code ? String(err.code) : "").replace(/^functions\//, "");
+                console.error("NUTrade: callable '" + name + "' failed -", code, (err && err.message) || err);
+                return {
+                    success: false,
+                    data: null,
+                    errorCode: code || "internal",
+                    errorMessage: (err && err.message) || "The request failed."
+                };
+            }
         },
 
         // 1. Firebase Authentication & RBAC Verification Flow
@@ -793,7 +680,7 @@ window.NUTradeFirebase = (function () {
                         console.error("NUTrade: could not read admin custom claim -", claimErr.message || claimErr);
                     }
 
-                    // Query users/{uid} for profile details and role fallback (matches firestore.rules isAdmin())
+                    // Query users/{uid} for profile details only; it never grants admin rights.
                     let profile = null;
                     if (dbInstance) {
                         try {
@@ -801,10 +688,6 @@ window.NUTradeFirebase = (function () {
                             if (userDoc.exists) {
                                 profile = userDoc.data();
                                 profile.uid = uid;
-                                if (!claimIsAdmin && profile.role === "admin") {
-                                    claimIsAdmin = true;
-                                    console.log("NUTrade: admin role verified from users/" + uid);
-                                }
                             }
                         } catch (docErr) {
                             console.warn("NUTrade: Firestore user profile query error:", docErr);
@@ -884,81 +767,72 @@ window.NUTradeFirebase = (function () {
 
         // Second-factor codes live in the shared "(default)" database.
         saveSecurityCodeHash: async function (uid, codeHash, expiresAtIso) {
-            if (authInstance && authInstance.currentUser) {
-                if (dbInstance) {
-                    try {
-                        await dbInstance.collection("admin_security_codes").doc(uid).set({
-                            uid: uid,
-                            codeHash: codeHash,
-                            expiresAt: expiresAtIso,
-                            updatedAt: new Date().toISOString()
-                        });
-                        return true;
-                    } catch (err) {
-                        console.warn("NUTrade: direct saveSecurityCodeHash failed, trying REST fallback -", err.message || err);
-                    }
-                }
+            if (!authInstance || !authInstance.currentUser) return false;
+
+            if (dbInstance) {
                 try {
-                    await webPanelRequest("PATCH", "admin_security_codes/" + uid, toRestFields({
+                    await dbInstance.collection("admin_security_codes").doc(uid).set({
                         uid: uid,
                         codeHash: codeHash,
                         expiresAt: expiresAtIso,
                         updatedAt: new Date().toISOString()
-                    }));
+                    });
                     return true;
                 } catch (err) {
-                    console.error("NUTrade: saveSecurityCodeHash FAILED -", err.message || err);
-                    return false;
+                    console.warn("NUTrade: direct saveSecurityCodeHash failed, trying REST fallback -", err.message || err);
                 }
             }
-
-            mockState.securityCodes[uid] = {
-                uid: uid,
-                codeHash: codeHash,
-                expiresAt: expiresAtIso
-            };
-            return true;
+            try {
+                await webPanelRequest("PATCH", "admin_security_codes/" + uid, toRestFields({
+                    uid: uid,
+                    codeHash: codeHash,
+                    expiresAt: expiresAtIso,
+                    updatedAt: new Date().toISOString()
+                }));
+                return true;
+            } catch (err) {
+                console.error("NUTrade: saveSecurityCodeHash FAILED -", err.message || err);
+                return false;
+            }
         },
 
         getSecurityCodeHash: async function (uid) {
-            if (authInstance && authInstance.currentUser) {
-                if (dbInstance) {
-                    try {
-                        const snap = await dbInstance.collection("admin_security_codes").doc(uid).get();
-                        if (snap.exists) {
-                            return snap.data();
-                        }
-                    } catch (err) {
-                        console.warn("NUTrade: direct getSecurityCodeHash failed, trying REST fallback -", err.message || err);
-                    }
-                }
+            if (!authInstance || !authInstance.currentUser) return null;
+
+            if (dbInstance) {
                 try {
-                    const doc = await webPanelRequest("GET", "admin_security_codes/" + uid);
-                    return doc ? fromRestFields(doc) : null;
+                    const snap = await dbInstance.collection("admin_security_codes").doc(uid).get();
+                    if (snap.exists) {
+                        return snap.data();
+                    }
                 } catch (err) {
-                    console.error("NUTrade: getSecurityCodeHash FAILED -", err.message || err);
-                    return null;
+                    console.warn("NUTrade: direct getSecurityCodeHash failed, trying REST fallback -", err.message || err);
                 }
             }
-            return mockState.securityCodes[uid] || null;
+            try {
+                const doc = await webPanelRequest("GET", "admin_security_codes/" + uid);
+                return doc ? fromRestFields(doc) : null;
+            } catch (err) {
+                console.error("NUTrade: getSecurityCodeHash FAILED -", err.message || err);
+                return null;
+            }
         },
 
         deleteSecurityCodeHash: async function (uid) {
-            if (authInstance && authInstance.currentUser) {
-                if (dbInstance) {
-                    try {
-                        await dbInstance.collection("admin_security_codes").doc(uid).delete();
-                    } catch (err) {
-                        console.warn("NUTrade: direct deleteSecurityCodeHash failed, trying REST fallback -", err.message || err);
-                    }
-                }
+            if (!authInstance || !authInstance.currentUser) return true;
+
+            if (dbInstance) {
                 try {
-                    await webPanelRequest("DELETE", "admin_security_codes/" + uid);
+                    await dbInstance.collection("admin_security_codes").doc(uid).delete();
                 } catch (err) {
-                    console.warn("NUTrade: deleteSecurityCodeHash warning -", err.message || err);
+                    console.warn("NUTrade: direct deleteSecurityCodeHash failed, trying REST fallback -", err.message || err);
                 }
             }
-            delete mockState.securityCodes[uid];
+            try {
+                await webPanelRequest("DELETE", "admin_security_codes/" + uid);
+            } catch (err) {
+                console.warn("NUTrade: deleteSecurityCodeHash warning -", err.message || err);
+            }
             return true;
         },
 
@@ -984,7 +858,6 @@ window.NUTradeFirebase = (function () {
                 console.log("[NUTrade] Security code email sent via EmailJS. Status:", result.status, result.text);
                 return true;
             } catch (emailErr) {
-                // Log the full error object so we can debug
                 console.error("[NUTrade] EmailJS send error (full):", JSON.stringify(emailErr));
                 const msg = emailErr.text || emailErr.message || JSON.stringify(emailErr) || "Unknown EmailJS error.";
                 throw new Error("Failed to send security code email: " + msg);
@@ -1009,7 +882,6 @@ window.NUTradeFirebase = (function () {
             if (authInstance) {
                 await authInstance.signOut();
             }
-            mockState.currentUser = null;
             return true;
         },
 
@@ -1019,58 +891,31 @@ window.NUTradeFirebase = (function () {
             return true;
         },
 
-        // 2. Real-time Metrics & Gross Revenue Listener
+        // 2. Real-time revenue metrics from counters/revenue (maintained by the app's functions)
         subscribeToMetrics: function (dotNetHelper, methodName) {
             const key = "metrics";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                const unsub = dbInstance.collection("payments").onSnapshot(snap => {
-                    let totalRev = 0;
-                    let txCount = snap.size;
-                    let priorityCount = 0;
-                    snap.forEach(d => {
-                        const pData = d.data();
-                        let amt = Number(pData.amount) || 0;
-                        if (amt >= 100) amt = amt / 100;
-                        totalRev += amt;
-                        const pkg = (pData.package || pData.packageType || "").toString().toLowerCase();
-                        if (pkg.includes("priority") || amt === 20) priorityCount++;
-                    });
-
-                    const conversionRate = txCount > 0 ? (priorityCount / txCount) * 100 : 0.0;
-
-                    const metricsObj = {
-                        grossRevenue: totalRev,
-                        totalBidsPlaced: 0,
-                        auctionCompletionRate: 100.0,
-                        averageBidsPerItem: 1.0,
-                        freeToPaidConversionRate: conversionRate,
-                        activeListingsCount: 1,
-                        pendingVerificationsCount: 0,
-                        totalTransactionsCount: txCount,
-                        lastUpdated: new Date().toISOString()
-                    };
-                    dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(metricsObj));
-                }, err => {
-                    console.warn("Metrics listener warning:", err.message);
-                });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_metrics_live";
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, JSON.stringify({ grossRevenue: 0, totalTransactionsCount: 0 }));
+                return "sub_metrics_offline";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify({
-                grossRevenue: 0,
-                totalBidsPlaced: 0,
-                auctionCompletionRate: 0.0,
-                averageBidsPerItem: 0.0,
-                freeToPaidConversionRate: 0.0,
-                activeListingsCount: 0,
-                pendingVerificationsCount: 0,
-                totalTransactionsCount: 0,
-                lastUpdated: new Date().toISOString()
-            }));
-            return "sub_metrics_mock";
+            const unsub = dbInstance.collection("counters").doc("revenue").onSnapshot(doc => {
+                const c = doc.exists ? sanitizeFirestoreData(doc.data() || {}) : {};
+                dotNetHelper.invokeMethodAsync(methodName, JSON.stringify({
+                    grossRevenue: numberValue(c.grossCentavos) / 100,
+                    totalTransactionsCount: numberValue(c.transactionCount),
+                    lastUpdated: c.updatedAt || null
+                }));
+            }, err => {
+                console.warn("Metrics listener warning:", err.message);
+                try {
+                    dotNetHelper.invokeMethodAsync("OnListenerError", "metrics", (err.code || "") + " " + (err.message || ""));
+                } catch (e) { /* ignore */ }
+            });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_metrics_live";
         },
 
         // 3. Pending Verifications Queue Listener
@@ -1078,444 +923,348 @@ window.NUTradeFirebase = (function () {
             const key = "verifications";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                const unsub = dbInstance.collection("users")
-                    .where("verificationStatus", "==", "pending")
-                    .onSnapshot(snap => {
-                        const list = [];
-                        snap.forEach(d => {
-                            const data = sanitizeFirestoreData(d.data());
-                            data.uid = d.id;
-                            data.displayName = data.displayName || data.name || data.fullName || (data.firstName ? (data.firstName + " " + (data.lastName || "")) : "") || data.email || "Student User";
-                            data.firstName = data.firstName || (data.displayName ? data.displayName.split(" ")[0] : "") || data.name || "";
-                            data.lastName = data.lastName || (data.displayName ? data.displayName.split(" ").slice(1).join(" ") : "") || "";
-                            data.program = data.program || data.course || data.department || data.degree || data.major || "Program unavailable";
-                            data.photoUrl = data.photoUrl || data.photoURL || data.profileImage || data.avatar || "";
-                            list.push(data);
-                        });
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => {
-                        console.warn("Verifications Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingVerifications));
-                    });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_verifications_live";
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_verifications_offline";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingVerifications));
-            return "sub_verifications_mock";
-        },
-
-        // Approve / Reject Email Verification
-        updateVerificationStatus: async function (uid, status, rejectionReason) {
-            if (dbInstance) {
-                try {
-                    const isApproved = status === "verified";
-                    const updates = {
-                        verificationStatus: status,
-                        rejectionReason: rejectionReason || null,
-                        canPost: isApproved,
-                        canBid: isApproved,
-                        canChat: isApproved,
-                        verifiedAt: isApproved ? window.firebase.firestore.FieldValue.serverTimestamp() : null
-                    };
-                    await dbInstance.collection("users").doc(uid).update(updates);
-                    return true;
-                } catch (writeErr) {
-                    console.error("Firestore update verification failed:", writeErr);
-                    throw new Error(writeErr.message || "Failed to update user in Firebase.");
-                }
-            }
-
-            // Fallback update only if DB instance is not connected
-            const index = mockState.pendingVerifications.findIndex(v => v.uid === uid);
-            if (index !== -1) {
-                const user = mockState.pendingVerifications[index];
-                user.verificationStatus = status;
-                user.rejectionReason = rejectionReason || null;
-                user.canPost = status === "verified";
-                user.canBid = status === "verified";
-                user.canChat = status === "verified";
-
-                mockState.pendingVerifications.splice(index, 1);
-                mockState.metrics.pendingVerificationsCount = mockState.pendingVerifications.length;
-
-                // Also update in allUsers if it exists
-                if (mockState.allUsers) {
-                    const allUserIndex = mockState.allUsers.findIndex(u => u.uid === uid);
-                    if (allUserIndex !== -1) {
-                        mockState.allUsers[allUserIndex].verificationStatus = status;
-                        mockState.allUsers[allUserIndex].canPost = status === "verified";
-                        mockState.allUsers[allUserIndex].canBid = status === "verified";
-                        mockState.allUsers[allUserIndex].canChat = status === "verified";
-                        notifySubscribers("allUsers", mockState.allUsers);
-                    }
-                }
-
-                notifySubscribers("verifications", mockState.pendingVerifications);
-                notifySubscribers("metrics", mockState.metrics);
-            }
-            return true;
+            const unsub = dbInstance.collection("users")
+                .where("verificationStatus", "==", "pending")
+                .onSnapshot(snap => {
+                    const list = [];
+                    snap.forEach(d => list.push(normalizeUserDoc(d)));
+                    dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                }, err => {
+                    console.warn("Verifications listener error:", err.message);
+                    reportListenerError(dotNetHelper, methodName, "verifications", err);
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_verifications_live";
         },
 
         subscribeToAllUsers: function (dotNetHelper, methodName) {
             const key = "allUsers";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                const unsub = dbInstance.collection("users")
-                    .onSnapshot(snap => {
-                        const list = [];
-                        snap.forEach(d => {
-                            const data = sanitizeFirestoreData(d.data());
-                            data.uid = d.id;
-                            data.displayName = data.displayName || data.name || data.fullName || (data.firstName ? (data.firstName + " " + (data.lastName || "")) : "") || data.email || "Student User";
-                            data.firstName = data.firstName || (data.displayName ? data.displayName.split(" ")[0] : "") || data.name || "";
-                            data.lastName = data.lastName || (data.displayName ? data.displayName.split(" ").slice(1).join(" ") : "") || "";
-                            data.program = data.program || data.course || data.department || data.degree || data.major || "Program unavailable";
-                            data.photoUrl = data.photoUrl || data.photoURL || data.profileImage || data.avatar || "";
-                            data.createdAt = data.createdAt || data.created_at || data.timestamp || data.registeredAt || data.joinedAt || data.submittedAt || data.dateCreated || null;
-                            list.push(data);
-                        });
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => {
-                        console.warn("AllUsers Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.allUsers));
-                    });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_allusers_live";
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_allusers_offline";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.allUsers));
-            return "sub_allusers_mock";
+            const unsub = dbInstance.collection("users")
+                .onSnapshot(snap => {
+                    const list = [];
+                    snap.forEach(d => list.push(normalizeUserDoc(d)));
+                    dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                }, err => {
+                    console.warn("AllUsers listener error:", err.message);
+                    reportListenerError(dotNetHelper, methodName, "allUsers", err);
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_allusers_live";
         },
 
         subscribeToPendingApprovalListings: async function (dotNetHelper, methodName) {
             const key = "pendingListings";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                await this.ensureAuthSession();
-                ensurePaymentsListener();
-                const unsub = dbInstance.collection("listings")
-                    .onSnapshot(snap => {
-                        console.log("NUTrade: [Firestore] Received listings snapshot, total docs in DB:", snap.size);
-                        const pendingDocs = [];
-                        snap.forEach(d => {
-                            const data = d.data() || {};
-                            const st = (data.status || "pending_approval").toString().toLowerCase().trim();
-                            if (st !== "active" && st !== "approved" && st !== "rejected" && st !== "unpublished" && st !== "deleted" && st !== "sold" && st !== "expired" && st !== "pending_meetup" && st !== "completed") {
-                                pendingDocs.push(d);
-                            }
-                        });
-                        console.log("NUTrade: [Firestore] Filtered pending approval listings count:", pendingDocs.length);
-                        pendingListingsSub = { snap: pendingDocs, dotNetHelper, methodName };
-                        processAndEmitPendingListings(pendingDocs, dotNetHelper, methodName);
-                    }, err => {
-                        console.error("NUTrade: pending listings listener error -", err.code || "", err.message || err);
-                        if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
-                            console.log("NUTrade: Waiting for Auth token to initialize live listings...");
-                        } else {
-                            dotNetHelper.invokeMethodAsync(methodName, "[]");
-                            dotNetHelper.invokeMethodAsync("OnListenerError", "pendingListings", (err.code || "") + " " + (err.message || ""));
-                        }
-                    });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_pending_listings_live";
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_pending_listings_offline";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.pendingListings));
-            return "sub_pending_listings_mock";
+            await this.ensureAuthSession();
+            ensurePaymentsListener();
+            const unsub = dbInstance.collection("listings")
+                .onSnapshot(snap => {
+                    const pendingDocs = [];
+                    snap.forEach(d => {
+                        const data = d.data() || {};
+                        if (data.status === "pending_approval") {
+                            pendingDocs.push(d);
+                        }
+                    });
+                    pendingListingsSub = { snap: pendingDocs, dotNetHelper, methodName };
+                    processAndEmitListings(pendingDocs, dotNetHelper, methodName, true);
+                }, err => {
+                    console.error("NUTrade: pending listings listener error -", err.code || "", err.message || err);
+                    if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
+                        console.log("NUTrade: Waiting for Auth token to initialize live listings...");
+                    } else {
+                        reportListenerError(dotNetHelper, methodName, "pendingListings", err);
+                    }
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_pending_listings_live";
         },
 
-        // Approve via the app's Cloud Function. The app's Firestore rules refuse
-        // direct writes to /listings, and the callable also sets the auction
-        // clock, the feed slot and notifies the seller.
+        // Approve / reject ONLY through the app's callables. They set the auction
+        // clock and feed slot and notify the seller; a direct write would skip
+        // all of that, and the app's rules refuse it anyway.
         approveListing: async function (listingId) {
-            if (authInstance && authInstance.currentUser) {
-                try {
-                    await authInstance.currentUser.getIdToken(true);
-                } catch (tErr) {
-                    console.warn("NUTrade: getIdToken(true) warning:", tErr);
-                }
-            }
-            const callable = getAppCallable("approveListing");
-            if (callable) {
-                try {
-                    const res = await callable({ listingId: listingId, id: listingId });
-                    const ok = !res || !res.data || (res.data.success !== false && res.data.ok !== false);
-                    if (ok) {
-                        console.log("NUTrade: approveListing callable succeeded for", listingId);
-                        return true;
-                    } else {
-                        console.error("NUTrade: approveListing callable rejected", listingId, res.data);
-                    }
-                } catch (err) {
-                    console.error("NUTrade: approveListing callable FAILED -", err.code || "", err.message || err);
-                }
-            } else {
-                console.error("NUTrade: approveListing callable unavailable.");
-            }
-
-            if (dbInstance) {
-                try {
-                    console.warn("NUTrade: approveListing falling back to direct Firestore write.");
-                    await dbInstance.collection("listings").doc(listingId).set({
-                        status: "active",
-                        isVisible: true,
-                        approvedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                        approvedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
-                    }, { merge: true });
-                    console.log("NUTrade: approveListing direct write succeeded for", listingId);
-                    return true;
-                } catch (writeErr) {
-                    console.error("NUTrade: approveListing direct write FAILED -", writeErr.code || "", writeErr.message || writeErr);
-                    return false;
-                }
-            }
-            return false;
+            return await this.callAppFunction("approveListing", { listingId: listingId }, true);
         },
 
-        // Reject via the app's Cloud Function or direct write fallback with notification
         rejectListing: async function (listingId, rejectionReason) {
-            if (authInstance && authInstance.currentUser) {
-                try {
-                    await authInstance.currentUser.getIdToken(true);
-                } catch (tErr) {
-                    console.warn("NUTrade: getIdToken(true) warning:", tErr);
-                }
-            }
-            const callable = getAppCallable("rejectListing");
-            if (callable) {
-                try {
-                    const res = await callable({
-                        listingId: listingId,
-                        id: listingId,
-                        reason: rejectionReason || "Does not comply with marketplace guidelines.",
-                        rejectionReason: rejectionReason || "Does not comply with marketplace guidelines."
-                    });
-                    const ok = !res || !res.data || (res.data.success !== false && res.data.ok !== false);
-                    if (ok) {
-                        console.log("NUTrade: rejectListing callable succeeded for", listingId);
-                        return true;
-                    } else {
-                        console.error("NUTrade: rejectListing callable rejected", listingId, res.data);
-                    }
-                } catch (err) {
-                    console.error("NUTrade: rejectListing callable FAILED -", err.code || "", err.message || err);
-                }
-            } else {
-                console.error("NUTrade: rejectListing callable unavailable.");
-            }
-
-            // Fallback: try direct Firestore update + student notification
-            if (dbInstance) {
-                try {
-                    console.warn("NUTrade: rejectListing executing direct Firestore update & student notification fallback.");
-                    const docRef = dbInstance.collection("listings").doc(listingId);
-                    const docSnap = await docRef.get();
-                    const listingData = docSnap.exists ? docSnap.data() : {};
-                    const sellerUid = listingData.sellerUid || listingData.userId || listingData.uid;
-                    const itemTitle = listingData.title || "Your listing";
-
-                    const reasonStr = rejectionReason || "Does not comply with marketplace guidelines.";
-                    await docRef.set({
-                        status: "rejected",
-                        isVisible: false,
-                        rejectionReason: reasonStr,
-                        rejectedAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                        rejectedBy: (authInstance && authInstance.currentUser ? authInstance.currentUser.email : "admin")
-                    }, { merge: true });
-
-                    // Push real-time notification to the student seller
-                    if (sellerUid) {
-                        try {
-                            const notifPayload = {
-                                userId: sellerUid,
-                                recipientUid: sellerUid,
-                                title: "Listing Rejected",
-                                body: "Your listing '" + itemTitle + "' was rejected. Reason: " + reasonStr,
-                                message: "Your listing '" + itemTitle + "' was rejected. Reason: " + reasonStr,
-                                type: "listing_rejected",
-                                listingId: listingId,
-                                isRead: false,
-                                read: false,
-                                createdAt: window.firebase.firestore.FieldValue.serverTimestamp()
-                            };
-                            await dbInstance.collection("notifications").add(notifPayload);
-                            console.log("NUTrade: Rejection notification sent to student:", sellerUid);
-                        } catch (notifErr) {
-                            console.warn("NUTrade: Student notification fallback warning:", notifErr.message || notifErr);
-                        }
-                    }
-
-                    console.log("NUTrade: rejectListing direct update succeeded for", listingId);
-                    return true;
-                } catch (writeErr) {
-                    console.error("NUTrade: rejectListing direct write FAILED -", writeErr.code || "", writeErr.message || writeErr);
-                    return false;
-                }
-            }
-            return false;
+            const reason = rejectionReason || "Does not comply with marketplace guidelines.";
+            return await this.callAppFunction("rejectListing", { listingId: listingId, reason: reason }, true);
         },
 
         subscribeToListings: async function (dotNetHelper, methodName) {
             const key = "listings";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                await this.ensureAuthSession();
-                ensurePaymentsListener();
-                const unsub = dbInstance.collection("listings")
-                    .onSnapshot(snap => {
-                        logListingsStructureOnce(snap);
-                        const activeDocs = [];
-                        snap.forEach(d => {
-                            const data = d.data() || {};
-                            const st = (data.status || "").toString().toLowerCase().trim();
-                            if (st === "active" || st === "approved" || st === "published" || (data.isVisible === true && st !== "rejected" && st !== "deleted" && st !== "unpublished")) {
-                                activeDocs.push(d);
-                            }
-                        });
-                        console.log("NUTrade: [Firestore] Filtered active listings count:", activeDocs.length);
-                        activeListingsSub = { snap: activeDocs, dotNetHelper, methodName };
-                        processAndEmitActiveListings(activeDocs, dotNetHelper, methodName);
-                    }, err => {
-                        console.error("NUTrade: active listings listener error -", err.code || "", err.message || err);
-                        if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
-                            console.log("NUTrade: Waiting for Auth token to initialize active listings...");
-                        } else {
-                            dotNetHelper.invokeMethodAsync(methodName, "[]");
-                            dotNetHelper.invokeMethodAsync("OnListenerError", "listings", (err.code || "") + " " + (err.message || ""));
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_listings_offline";
+            }
+
+            await this.ensureAuthSession();
+            ensurePaymentsListener();
+            const unsub = dbInstance.collection("listings")
+                .onSnapshot(snap => {
+                    logListingsStructureOnce(snap);
+                    const activeDocs = [];
+                    snap.forEach(d => {
+                        const data = d.data() || {};
+                        if (data.status === "active") {
+                            activeDocs.push(d);
                         }
                     });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_listings_live";
-            }
-
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(mockState.listings));
-            return "sub_listings_mock";
+                    activeListingsSub = { snap: activeDocs, dotNetHelper, methodName };
+                    processAndEmitListings(activeDocs, dotNetHelper, methodName, false);
+                }, err => {
+                    console.error("NUTrade: active listings listener error -", err.code || "", err.message || err);
+                    if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
+                        console.log("NUTrade: Waiting for Auth token to initialize active listings...");
+                    } else {
+                        reportListenerError(dotNetHelper, methodName, "listings", err);
+                    }
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_listings_live";
         },
 
-        updateListingStatus: async function (listingId, newStatus) {
-            if (dbInstance) {
-                try {
-                    const isVisible = (newStatus === "active");
-                    await dbInstance.collection("listings").doc(listingId).update({
-                        status: newStatus,
-                        isVisible: isVisible,
-                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                    return true;
-                } catch (writeErr) {
-                    // The app's rules refuse direct writes to /listings, and there is
-                    // no callable for unpublish / status toggle yet (only
-                    // approveListing and rejectListing exist). Report the real failure
-                    // instead of mutating local sample data and returning success.
-                    console.error("NUTrade: updateListingStatus('" + newStatus + "') FAILED -",
-                        writeErr.code || "", writeErr.message || writeErr);
-                    return false;
-                }
+        // Every listing regardless of status: drafts, live, settled, expired,
+        // traded. Identical query to the two above, so the SDK shares one target.
+        subscribeToAllListings: async function (dotNetHelper, methodName) {
+            const key = "allListings";
+            registerCallback(key, dotNetHelper, methodName);
+
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_all_listings_offline";
             }
 
-            const item = mockState.listings.find(l => l.id === listingId);
-            if (item) {
-                item.status = newStatus;
-                if (newStatus === "unpublished") {
-                    mockState.listings = mockState.listings.filter(l => l.id !== listingId);
-                }
-                mockState.metrics.activeListingsCount = mockState.listings.filter(l => l.status === "active").length;
-                notifySubscribers("listings", mockState.listings);
-                notifySubscribers("metrics", mockState.metrics);
-            }
-            return true;
+            await this.ensureAuthSession();
+            ensurePaymentsListener();
+            const unsub = dbInstance.collection("listings")
+                .onSnapshot(snap => {
+                    const docs = [];
+                    snap.forEach(d => docs.push(d));
+                    allListingsSub = { snap: docs, dotNetHelper, methodName };
+                    processAndEmitListings(docs, dotNetHelper, methodName, false);
+                }, err => {
+                    console.error("NUTrade: all listings listener error -", err.code || "", err.message || err);
+                    if (err.code === "permission-denied" && (!authInstance || !authInstance.currentUser)) {
+                        console.log("NUTrade: Waiting for Auth token to initialize all listings...");
+                    } else {
+                        reportListenerError(dotNetHelper, methodName, "allListings", err);
+                    }
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_all_listings_live";
         },
 
-        // 5. Audit Trail Transactions Ledger
+        // 5. Payments ledger (/payments, written by createQrPayment / paymongoWebhook)
         subscribeToTransactions: function (dotNetHelper, methodName) {
             const key = "transactions";
             registerCallback(key, dotNetHelper, methodName);
 
-            if (dbInstance) {
-                // Pre-fetch users map so we map uid -> user email / name
-                const userEmailMap = new Map();
-                dbInstance.collection("users").get().then(uSnap => {
-                    uSnap.forEach(ud => {
-                        const uData = ud.data();
-                        userEmailMap.set(ud.id, uData.email || uData.userEmail || uData.displayName || uData.name || ud.id);
-                    });
-                }).catch(() => {});
-
-                const unsub = dbInstance.collection("payments")
-                    .onSnapshot(snap => {
-                        const list = [];
-                        snap.forEach(d => {
-                            const data = sanitizeFirestoreData(d.data());
-                            let rawAmount = Number(data.amount) || 0;
-                            if (rawAmount >= 100) rawAmount = rawAmount / 100;
-
-                            let pkgType = data.package || data.packageType || "Standard Post";
-                            const pkgLower = pkgType.toLowerCase();
-                            if (pkgLower.includes("additional")) pkgType = "Standard Post";
-                            else if (pkgLower.includes("priority")) pkgType = "Priority Pin";
-
-                            const uid = data.uid || data.userId || "";
-                            const email = data.userEmail || data.email || userEmailMap.get(uid) || (uid ? `Student (${uid.substring(0, Math.min(8, uid.length))}...)` : "Student Payer");
-
-                            list.push({
-                                paymentId: d.id,
-                                payMongoIntentId: data.paymongoIntentId || data.payMongoIntentId || d.id,
-                                userId: uid || "N/A",
-                                userEmail: email,
-                                listingId: data.listingId || "N/A",
-                                packageType: pkgType,
-                                timestamp: data.paidAt || data.createdAt || new Date().toISOString(),
-                                amount: rawAmount,
-                                status: data.status || "paid"
-                            });
-                        });
-
-                        list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
-                    }, err => {
-                        console.warn("Transactions Firestore permission/read fallback:", err.message);
-                        dotNetHelper.invokeMethodAsync(methodName, JSON.stringify([]));
-                    });
-                storeLiveUnsubscriber(key, unsub);
-                return "sub_transactions_live";
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync(methodName, "[]");
+                return "sub_transactions_offline";
             }
 
-            dotNetHelper.invokeMethodAsync(methodName, JSON.stringify([]));
-            return "sub_transactions_mock";
+            // Pre-fetch users map so we map uid -> user email / name
+            const userEmailMap = new Map();
+            dbInstance.collection("users").get().then(uSnap => {
+                uSnap.forEach(ud => {
+                    const uData = ud.data();
+                    userEmailMap.set(ud.id, uData.email || uData.userEmail || uData.displayName || uData.name || ud.id);
+                });
+            }).catch(() => { });
+
+            const unsub = dbInstance.collection("payments")
+                .onSnapshot(snap => {
+                    const list = [];
+                    snap.forEach(d => {
+                        const data = sanitizeFirestoreData(d.data());
+
+                        const pkgType = packageLabel(data.package || data.packageType);
+
+                        const uid = data.uid || data.userId || "";
+                        const email = data.userEmail || data.email || userEmailMap.get(uid) || (uid ? `Student (${uid.substring(0, Math.min(8, uid.length))}...)` : "Unknown payer");
+
+                        let status = (data.status || "").toString().trim().toLowerCase();
+                        if (!status && data.paidAt) status = "paid";
+
+                        list.push({
+                            paymentId: d.id,
+                            payMongoIntentId: data.paymongoIntentId || data.payMongoIntentId || d.id,
+                            userId: uid || "N/A",
+                            userEmail: email,
+                            listingId: data.listingId || "N/A",
+                            packageType: pkgType,
+                            timestamp: data.paidAt || data.createdAt || null,
+                            qrExpiresAt: data.qrExpiresAt || null,
+                            amount: paymentAmountPesos(data),
+                            status: status
+                        });
+                    });
+
+                    list.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+                    dotNetHelper.invokeMethodAsync(methodName, JSON.stringify(list));
+                }, err => {
+                    console.warn("Transactions listener error:", err.message);
+                    reportListenerError(dotNetHelper, methodName, "transactions", err);
+                });
+            storeLiveUnsubscriber(key, unsub);
+            return "sub_transactions_live";
         },
 
-        // 6. Searchable Bid History Inspector
+        // 6. Bid ladder for one listing. App bids store amountCentavos, so no
+        // server-side orderBy (Firestore drops documents missing the ordered
+        // field); the console sorts by amount after mapping.
         getListingBids: async function (listingId) {
-            if (dbInstance) {
-                const snap = await dbInstance.collection("listings").doc(listingId)
-                    .collection("bids")
-                    .orderBy("amount", "desc")
-                    .get();
-                const bids = [];
-                snap.forEach(d => {
-                    const data = sanitizeFirestoreData(d.data());
-                    data.id = d.id;
-                    bids.push(data);
-                });
-                return bids;
-            }
+            if (!dbInstance) return [];
+            const snap = await dbInstance.collection("listings").doc(listingId)
+                .collection("bids")
+                .get();
+            const bids = [];
+            snap.forEach(d => {
+                const data = sanitizeFirestoreData(d.data());
+                data.id = d.id;
+                bids.push(data);
+            });
+            return bids;
+        },
 
-            return mockState.bids[listingId] || [
-                {
-                    id: "bid_sample_01",
-                    listingId: listingId,
-                    bidderUid: "usr_generic_99",
-                    bidderName: "Kenneth Dimaano",
-                    bidderEmail: "dimaano.k@lipa.nu.edu.ph",
-                    amount: 600.00,
-                    timestamp: new Date().toISOString()
+        // Revenue Desk: read-only listeners on the collections the app's functions
+        // maintain. Payout and dispute actions go through markPayoutPaid,
+        // declinePayout and resolveDispute, never direct writes.
+        subscribeToRevenueDesk: async function (dotNetHelper) {
+            this.unsubscribeRevenueDesk();
+            if (!dbInstance) {
+                dotNetHelper.invokeMethodAsync("OnRevenueDeskError", "revenueDesk", "Firestore is not initialized.");
+                return false;
+            }
+            await this.ensureAuthSession();
+
+            const onError = source => err => {
+                console.warn("NUTrade: " + source + " listener error -", err.code || "", err.message || err);
+                try {
+                    dotNetHelper.invokeMethodAsync("OnRevenueDeskError", source, ((err && err.code) || "") + " " + ((err && err.message) || ""));
+                } catch (e) { /* ignore */ }
+            };
+
+            const emitList = (method, snap, mapDoc) => {
+                const list = [];
+                snap.forEach(d => list.push(mapDoc(d.id, sanitizeFirestoreData(d.data() || {}))));
+                dotNetHelper.invokeMethodAsync(method, JSON.stringify(list));
+            };
+
+            storeLiveUnsubscriber("revenueCounter", dbInstance.collection("counters").doc("revenue")
+                .onSnapshot(doc => {
+                    const c = doc.exists ? sanitizeFirestoreData(doc.data() || {}) : {};
+                    dotNetHelper.invokeMethodAsync("OnRevenueCounterReceived", JSON.stringify({
+                        exists: doc.exists,
+                        grossCentavos: numberValue(c.grossCentavos),
+                        transactionCount: numberValue(c.transactionCount),
+                        forfeitedDepositsCentavos: numberValue(c.forfeitedDepositsCentavos),
+                        updatedAt: c.updatedAt || null
+                    }));
+                }, onError("revenueCounter")));
+
+            storeLiveUnsubscriber("revenueTransactions", dbInstance.collection("transactions")
+                .onSnapshot(snap => emitList("OnRevenueTransactionsReceived", snap, (id, t) => ({
+                    paymentId: asText(t.paymentId),
+                    payMongoIntentId: asText(t.payMongoIntentId),
+                    userId: asText(t.userId),
+                    userEmail: asText(t.userEmail),
+                    listingId: asText(t.listingId),
+                    packageType: packageLabel(t.packageType),
+                    amount: (t.amountCentavos !== undefined && t.amountCentavos !== null)
+                        ? numberValue(t.amountCentavos) / 100
+                        : numberValue(t.amount),
+                    status: asText(t.status).toLowerCase(),
+                    timestamp: t.timestamp || null
+                })), onError("revenueTransactions")));
+
+            storeLiveUnsubscriber("forfeitedDeposits", dbInstance.collection("bidIntents")
+                .where("status", "==", "forfeited")
+                .onSnapshot(snap => emitList("OnForfeitedDepositsReceived", snap, (id, b) => ({
+                    id: id,
+                    listingId: asText(b.listingId),
+                    listingTitle: asText(b.listingTitle),
+                    sellerUid: asText(b.sellerUid),
+                    bidderUid: asText(b.bidderUid),
+                    amountCentavos: numberValue(b.amountCentavos),
+                    depositCentavos: numberValue(b.depositCentavos),
+                    status: asText(b.status),
+                    createdAt: b.createdAt || null,
+                    resolvedAt: b.resolvedAt || null,
+                    refundReason: asText(b.refundReason),
+                    refundedVia: asText(b.refundedVia),
+                    committedBidId: asText(b.committedBidId)
+                })), onError("forfeitedDeposits")));
+
+            storeLiveUnsubscriber("payoutQueue", dbInstance.collection("payoutRequests")
+                .where("status", "==", "requested")
+                .onSnapshot(snap => emitList("OnPayoutQueueReceived", snap, (id, p) => ({
+                    id: id,
+                    uid: asText(p.uid),
+                    amountCentavos: numberValue(p.amountCentavos),
+                    method: asText(p.method),
+                    accountName: asText(p.accountName),
+                    accountNumber: asText(p.accountNumber),
+                    status: asText(p.status),
+                    createdAt: p.createdAt || null,
+                    resolvedAt: p.resolvedAt || null,
+                    resolvedBy: asText(p.resolvedBy),
+                    declineReason: asText(p.declineReason)
+                })), onError("payoutQueue")));
+
+            storeLiveUnsubscriber("disputeQueue", dbInstance.collection("disputes")
+                .where("status", "==", "open")
+                .onSnapshot(snap => emitList("OnDisputeQueueReceived", snap, (id, x) => ({
+                    id: id,
+                    chatId: asText(x.chatId),
+                    listingId: asText(x.listingId),
+                    listingTitle: asText(x.listingTitle),
+                    sellerUid: asText(x.sellerUid),
+                    buyerUid: asText(x.buyerUid),
+                    depositIntentId: asText(x.depositIntentId),
+                    depositCentavos: numberValue(x.depositCentavos),
+                    note: asText(x.note),
+                    status: asText(x.status),
+                    createdAt: x.createdAt || null,
+                    resolvedAt: x.resolvedAt || null,
+                    resolvedBy: asText(x.resolvedBy),
+                    resolution: asText(x.resolution)
+                })), onError("disputeQueue")));
+
+            return true;
+        },
+
+        unsubscribeRevenueDesk: function () {
+            REVENUE_DESK_KEYS.forEach(key => {
+                if (liveUnsubscribers.has(key)) {
+                    try { liveUnsubscribers.get(key)(); } catch (e) { /* ignore */ }
+                    liveUnsubscribers.delete(key);
                 }
-            ];
+            });
+            return true;
         },
 
         // 7. Session Persistence & 5-Minute Inactivity Auto-Logout
@@ -1615,7 +1364,7 @@ window.NUTradeFirebase = (function () {
                     console.warn("NUTrade: 5 minutes of inactivity detected. Auto-logging out...");
                     NUTradeFirebase.clearSession();
                     if (authInstance) {
-                        authInstance.signOut().catch(() => {});
+                        authInstance.signOut().catch(() => { });
                     }
                     if (inactivityDotNetHelper) {
                         try {

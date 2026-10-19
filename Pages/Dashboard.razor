@@ -30,8 +30,7 @@
                 </div>
 
                 <div class="badge-pill" style="background: rgba(212, 160, 23, 0.15); color: var(--nu-gold-primary); border: 1px solid rgba(212, 160, 23, 0.35);">
-                    <span class="pulse-dot" style="background-color: var(--nu-gold-primary);"></span>
-                    <span>PayMongo Live</span>
+                    <span>Settled PayMongo payments</span>
                 </div>
             </div>
 
@@ -47,39 +46,17 @@
                     <span style="color: #FFFFFF; font-weight: 600;">@FirestoreService.Metrics.TotalTransactionsCount.ToString("N0")</span> settled micro-transactions
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
-                    <span>Tiers:</span>
-                    <span style="color: var(--nu-text-muted); font-weight: 600;">₱0 Free</span>
+                    <span>Packages:</span>
+                    <span style="color: var(--nu-text-muted); font-weight: 600;">Free</span>
                     <span>·</span>
-                    <span style="color: var(--nu-gold-primary); font-weight: 700;">₱10 Additional</span>
+                    <span style="color: var(--nu-gold-primary); font-weight: 700;">Standard Post</span>
                     <span>·</span>
-                    <span style="color: var(--nu-gold-primary); font-weight: 700;">₱20 Priority Pin</span>
+                    <span style="color: var(--nu-gold-primary); font-weight: 700;">Priority Pin</span>
                 </div>
             </div>
         </div>
 
         <div class="dash-side-stack">
-            <div class="nu-card nu-card-interactive dash-quick-card" @onclick='() => NavigationManager.NavigateTo("admin/verifications")'>
-                <div class="dash-quick-left">
-                    <div class="dash-icon-box gold">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-                            <circle cx="9" cy="7" r="4"/>
-                            <polyline points="16 11 18 13 22 9"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <div style="font-size: 0.72rem; font-weight: 700; color: var(--nu-text-muted); text-transform: uppercase;">
-                            Email Verification Queue
-                        </div>
-                        <div style="font-family: 'Outfit', sans-serif; font-size: 1.35rem; font-weight: 800; color: var(--nu-navy-primary);">
-                            @FirestoreService.PendingVerifications.Count
-                            <span style="font-size: 0.8rem; font-weight: 600; color: var(--nu-text-muted);">awaiting review</span>
-                        </div>
-                    </div>
-                </div>
-                <span class="badge-pill badge-pill-gold">Review →</span>
-            </div>
-
             <div class="nu-card nu-card-interactive dash-quick-card" @onclick='() => NavigationManager.NavigateTo("admin/listings")'>
                 <div class="dash-quick-left">
                     <div class="dash-icon-box navy">
@@ -111,27 +88,43 @@
                 <p>Key performance indicators across bidding, conversion, and auction liquidity</p>
             </div>
             <div style="font-size: 0.75rem; color: var(--nu-text-muted);">
-                Auto-aggregated from Firestore telemetry
+                @if (!FirestoreService.ListingsLoaded)
+                {
+                    <span>Loading listings...</span>
+                }
+                else
+                {
+                    <span>Computed live from @FirestoreService.Metrics.TotalListingsCount.ToString("N0") listing@(FirestoreService.Metrics.TotalListingsCount == 1 ? "" : "s") in Firestore</span>
+                }
             </div>
         </div>
 
+        @{
+            var m = FirestoreService.Metrics;
+            var endedWithBids = (int)Math.Round(m.AuctionCompletionRate * m.EndedAuctionsCount / 100.0);
+            var paidListings = (int)Math.Round(m.FreeToPaidConversionRate * m.SubmittedListingsCount / 100.0);
+        }
         <div class="dash-stats">
             <div class="nu-card dash-stat-card">
                 <div class="dash-stat-label">
                     <span>Total Bids Placed</span>
                     <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Cumulative</span>
                 </div>
-                <div class="dash-stat-value">@FirestoreService.Metrics.TotalBidsPlaced.ToString("N0")</div>
-                <div class="dash-stat-hint up">↑ +18.4% vs. last week</div>
+                <div class="dash-stat-value">@m.TotalBidsPlaced.ToString("N0")</div>
+                <div class="dash-stat-hint">Sum of bid counts across all listings</div>
             </div>
 
             <div class="nu-card dash-stat-card">
                 <div class="dash-stat-label">
                     <span>Completion Rate</span>
-                    <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Matched</span>
+                    <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">Ended auctions</span>
                 </div>
-                <div class="dash-stat-value">@FirestoreService.Metrics.AuctionCompletionRate.ToString("0.0")%</div>
-                <div class="dash-stat-hint">Matched bids vs. expired reserve</div>
+                <div class="dash-stat-value">@(m.EndedAuctionsCount > 0 ? m.AuctionCompletionRate.ToString("0.0") + "%" : "—")</div>
+                <div class="dash-stat-hint">
+                    @(m.EndedAuctionsCount > 0
+                        ? $"{endedWithBids} of {m.EndedAuctionsCount} ended auctions closed with a bid"
+                        : "No auctions have ended yet")
+                </div>
             </div>
 
             <div class="nu-card dash-stat-card">
@@ -139,17 +132,17 @@
                     <span>Avg Bids / Item</span>
                     <span class="badge-pill badge-pill-navy" style="font-size: 0.65rem;">Liquidity</span>
                 </div>
-                <div class="dash-stat-value">@FirestoreService.Metrics.AverageBidsPerItem.ToString("0.0")</div>
-                <div class="dash-stat-hint up">Healthy campus competition</div>
+                <div class="dash-stat-value">@(m.AuctionedListingsCount > 0 ? m.AverageBidsPerItem.ToString("0.0") : "—")</div>
+                <div class="dash-stat-hint">Across @m.AuctionedListingsCount listing@(m.AuctionedListingsCount == 1 ? "" : "s") that went to auction</div>
             </div>
 
             <div class="nu-card dash-stat-card">
                 <div class="dash-stat-label">
-                    <span>Free → Paid Upgrade</span>
+                    <span>Paid Listing Share</span>
                     <span class="badge-pill badge-pill-gold" style="font-size: 0.65rem;">PayMongo</span>
                 </div>
-                <div class="dash-stat-value">@FirestoreService.Metrics.FreeToPaidConversionRate.ToString("0.0")%</div>
-                <div class="dash-stat-hint">Users upgrading to Priority Pin (₱20)</div>
+                <div class="dash-stat-value">@(m.SubmittedListingsCount > 0 ? m.FreeToPaidConversionRate.ToString("0.0") + "%" : "—")</div>
+                <div class="dash-stat-hint">@paidListings of @m.SubmittedListingsCount submitted listings paid a fee</div>
             </div>
         </div>
     </div>
@@ -162,11 +155,11 @@
                     <span class="badge-pill badge-pill-navy" style="font-size: 0.68rem;">transactions</span>
                 </h3>
                 <div style="font-size: 0.8rem; color: var(--nu-text-muted);">
-                    Real-time settlements processed through PayMongo gateway webhooks
+                    Every /payments record: QR codes minted by createQrPayment and settled by the PayMongo webhook
                 </div>
             </div>
 
-            <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+            <div class="nu-toolbar-group">
                 <div class="nu-search-field">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
                         <circle cx="11" cy="11" r="8"/>
@@ -176,32 +169,67 @@
                            class="nu-input"
                            placeholder="Search Intent ID, User, or Item..."
                            @bind="_searchFilter"
-                           @bind:event="oninput" />
+                           @bind:event="oninput"
+                           @bind:after="_paymentsPage.Reset" />
                 </div>
 
-                <button type="button" class="btn-nu-outline" style="font-size: 0.82rem;" @onclick="RefreshData">
-                    Refresh
-                </button>
+                <select class="nu-select" @bind="_packageFilter" @bind:after="_paymentsPage.Reset" aria-label="Filter by package">
+                    <option value="">All packages</option>
+                    @foreach (var pkg in PackageOptions)
+                    {
+                        <option value="@pkg">@pkg</option>
+                    }
+                </select>
+
+                <select class="nu-select" @bind="_paymentFilter" @bind:after="_paymentsPage.Reset" aria-label="Filter by payment status">
+                    <option value="">All payments (@FirestoreService.Transactions.Count)</option>
+                    <option value="paid">Paid (@CountByStatus("paid"))</option>
+                    <option value="awaiting_payment">Awaiting payment (@CountByStatus("awaiting_payment"))</option>
+                    <option value="expired">Expired (@CountByStatus("expired"))</option>
+                    <option value="failed">Failed (@CountByStatus("failed"))</option>
+                </select>
+
+                @if (FirestoreService.Metrics.LastUpdated.HasValue)
+                {
+                    <span style="font-size: 0.75rem; color: var(--nu-text-muted);">
+                        Updated @FirestoreService.Metrics.LastUpdated.Value.ToLocalTime().ToString("hh:mm:ss tt")
+                    </span>
+                }
             </div>
         </div>
 
+        @if (!string.IsNullOrWhiteSpace(FirestoreService.LastListenerError))
+        {
+            <div class="nu-inline-error" style="margin-bottom: 1rem;">@FirestoreService.LastListenerError</div>
+        }
+
+        @{
+            var paymentRows = FilteredTransactions.ToList();
+            var paymentPage = _paymentsPage.Slice(paymentRows);
+        }
         <div class="nu-table-container">
             <table class="nu-table">
                 <thead>
                     <tr>
                         <th>PayMongo Intent ID</th>
                         <th>User (Payer)</th>
-                        <th>Listing ID</th>
+                        <th>Listing</th>
                         <th>Package Type</th>
-                        <th>Settled Amount</th>
+                        <th>Amount</th>
                         <th>Timestamp</th>
                         <th style="text-align: right;">Dispute Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    @if (FilteredTransactions.Any())
+                    @if (!FirestoreService.TransactionsLoaded)
                     {
-                        @foreach (var tx in FilteredTransactions)
+                        <tr>
+                            <td colspan="7" class="nu-empty-state">Loading payments from Firestore...</td>
+                        </tr>
+                    }
+                    else if (paymentRows.Count > 0)
+                    {
+                        @foreach (var tx in paymentPage)
                         {
                             <tr>
                                 <td>
@@ -211,43 +239,81 @@
                                     <div class="nu-cell-sub">ID: @tx.PaymentId</div>
                                 </td>
                                 <td>
-                                    <div class="nu-cell-primary">@tx.UserEmail</div>
-                                </td>
-                                <td>
-                                    <span class="badge-pill badge-pill-navy nu-mono" style="font-size: 0.72rem;">
-                                        @tx.ListingId
-                                    </span>
-                                </td>
-                                <td>
-                                    @if (tx.PackageType.Contains("Priority", StringComparison.OrdinalIgnoreCase))
+                                    @{ var payer = FindUser(tx.UserId); }
+                                    @if (payer != null)
                                     {
-                                        <span class="badge-pill badge-pill-gold">Priority Pin (₱20)</span>
-                                    }
-                                    else if (tx.PackageType.Contains("Free", StringComparison.OrdinalIgnoreCase) || tx.Amount == 0)
-                                    {
-                                        <span class="badge-pill badge-pill-muted">Free Listing (₱0)</span>
+                                        <div class="nu-cell-primary">@payer.DisplayName</div>
+                                        <div class="nu-cell-sub">@payer.Email</div>
                                     }
                                     else
                                     {
-                                        <span class="badge-pill badge-pill-navy">Additional Post (₱10)</span>
+                                        <div class="nu-cell-primary">@tx.UserEmail</div>
+                                    }
+                                </td>
+                                <td>
+                                    @{ var paidListing = FindListing(tx.ListingId); }
+                                    @if (paidListing != null)
+                                    {
+                                        <div class="nu-cell-primary">@paidListing.Title</div>
+                                        <StatusBadge Status="@paidListing.Status" />
+                                    }
+                                    <div>
+                                        <span class="badge-pill badge-pill-navy nu-mono" style="font-size: 0.72rem;">
+                                            @tx.ListingId
+                                        </span>
+                                    </div>
+                                </td>
+                                <td>
+                                    @if (tx.PackageType == "Priority Pin")
+                                    {
+                                        <span class="badge-pill badge-pill-gold">Priority Pin</span>
+                                    }
+                                    else if (tx.PackageType == "Free")
+                                    {
+                                        <span class="badge-pill badge-pill-muted">Free</span>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(tx.PackageType))
+                                    {
+                                        <span class="badge-pill badge-pill-navy">@tx.PackageType</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="font-size: 0.78rem; color: var(--nu-text-muted);">—</span>
                                     }
                                 </td>
                                 <td>
                                     <div class="nu-amount" style="font-size: 1rem;">₱@tx.Amount.ToString("N2")</div>
-                                    <span style="font-size: 0.7rem; color: var(--nu-success); font-weight: 600;">Settled</span>
+                                    <StatusBadge Status="@tx.Status" Kind="payment" />
+                                    @if (tx.Status == "awaiting_payment" && tx.QrExpiresAt.HasValue)
+                                    {
+                                        <div class="nu-cell-sub">
+                                            @(tx.QrExpiresAt.Value.ToUniversalTime() <= DateTime.UtcNow
+                                                ? "QR code expired"
+                                                : $"QR expires {tx.QrExpiresAt.Value.ToLocalTime():hh:mm tt}")
+                                        </div>
+                                    }
                                 </td>
                                 <td>
-                                    <div style="font-size: 0.82rem; color: var(--nu-text-body);">
-                                        @tx.Timestamp.ToLocalTime().ToString("MMM dd, yyyy")
-                                    </div>
-                                    <div class="nu-cell-sub">
-                                        @tx.Timestamp.ToLocalTime().ToString("hh:mm:ss tt")
-                                    </div>
+                                    @if (tx.Timestamp.HasValue)
+                                    {
+                                        <div style="font-size: 0.82rem; color: var(--nu-text-body);">
+                                            @tx.Timestamp.Value.ToLocalTime().ToString("MMM dd, yyyy")
+                                        </div>
+                                        <div class="nu-cell-sub">
+                                            @tx.Timestamp.Value.ToLocalTime().ToString("hh:mm:ss tt")
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <span class="nu-cell-sub">—</span>
+                                    }
                                 </td>
                                 <td style="text-align: right;">
                                     <button type="button"
                                             class="btn-nu-outline"
                                             style="font-size: 0.75rem; padding: 0.4rem 0.75rem;"
+                                            disabled="@(!tx.HasListing)"
+                                            title="@(tx.HasListing ? "Open the listing and its bid history" : "This payment is not linked to a listing")"
                                             @onclick="() => InspectBids(tx.ListingId)">
                                         Inspect Bids
                                     </button>
@@ -259,13 +325,17 @@
                     {
                         <tr>
                             <td colspan="7" class="nu-empty-state">
-                                No transaction settlements found matching your search.
+                                @(FirestoreService.Transactions.Count == 0 ? "No payments have been recorded yet." : "No payments match your search.")
                             </td>
                         </tr>
                     }
                 </tbody>
             </table>
         </div>
+        @if (FirestoreService.TransactionsLoaded)
+        {
+            <Pager State="_paymentsPage" TotalCount="paymentRows.Count" Changed="StateHasChanged" />
+        }
     </div>
 </div>
 
@@ -292,8 +362,27 @@
                         <div style="margin-top: 0.65rem;">Loading live bid history...</div>
                     </div>
                 }
+                else if (_bidError != null)
+                {
+                    <div class="nu-inline-error">@_bidError</div>
+                }
                 else if (_inspectedBids.Any())
                 {
+                    var bidStatuses = _inspectedBids.Select(b => b.Status).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().OrderBy(s => s).ToList();
+                    var bidRows = _inspectedBids.Where(b => string.IsNullOrEmpty(_bidStatusFilter) || b.Status == _bidStatusFilter).ToList();
+                    var bidPage = _bidsPage.Slice(bidRows);
+                    if (bidStatuses.Count > 1)
+                    {
+                        <div style="display: flex; justify-content: flex-end; margin-bottom: 0.75rem;">
+                            <select class="nu-select" @bind="_bidStatusFilter" @bind:after="_bidsPage.Reset" aria-label="Filter bids by status">
+                                <option value="">All bids (@_inspectedBids.Count)</option>
+                                @foreach (var s in bidStatuses)
+                                {
+                                    <option value="@s">@s.Replace('_', ' ')</option>
+                                }
+                            </select>
+                        </div>
+                    }
                     <div class="nu-table-container">
                         <table class="nu-table">
                             <thead>
@@ -301,29 +390,42 @@
                                     <th>Bid Amount</th>
                                     <th>Bidder Name / UID</th>
                                     <th>Student Email</th>
+                                    <th>Status</th>
                                     <th>Timestamp</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                @foreach (var bid in _inspectedBids)
+                                @foreach (var bid in bidPage)
                                 {
+                                    var bidder = FindUser(bid.BidderUid);
                                     <tr>
                                         <td>
                                             <span class="nu-amount" style="font-size: 1rem;">₱@bid.Amount.ToString("N2")</span>
                                         </td>
                                         <td>
-                                            <div class="nu-cell-primary">@bid.BidderName</div>
+                                            <div class="nu-cell-primary">@(string.IsNullOrWhiteSpace(bid.BidderName) ? bidder?.DisplayName ?? "Unknown bidder" : bid.BidderName)</div>
                                             <div class="nu-cell-sub nu-mono">@bid.BidderUid</div>
                                         </td>
-                                        <td style="font-size: 0.82rem;">@bid.BidderEmail</td>
+                                        <td style="font-size: 0.82rem;">@(string.IsNullOrWhiteSpace(bid.BidderEmail) ? bidder?.Email ?? "—" : bid.BidderEmail)</td>
+                                        <td>
+                                            @if (string.IsNullOrWhiteSpace(bid.Status))
+                                            {
+                                                <span class="nu-cell-sub">—</span>
+                                            }
+                                            else
+                                            {
+                                                <StatusBadge Status="@bid.Status" Kind="bid" />
+                                            }
+                                        </td>
                                         <td class="nu-cell-sub">
-                                            @bid.Timestamp.ToLocalTime().ToString("MMM dd, hh:mm:ss tt")
+                                            @(bid.Timestamp.HasValue ? bid.Timestamp.Value.ToLocalTime().ToString("MMM dd, hh:mm:ss tt") : "—")
                                         </td>
                                     </tr>
                                 }
                             </tbody>
                         </table>
                     </div>
+                    <Pager State="_bidsPage" TotalCount="bidRows.Count" Changed="StateHasChanged" />
                 }
                 else
                 {
@@ -338,22 +440,52 @@
     </div>
 }
 
+<ListingDetailModal Listing="_detailListing" OnClose="() => _detailListing = null" />
+
 @code {
     private string _searchFilter = string.Empty;
+    private string _paymentFilter = string.Empty;
+    private string _packageFilter = string.Empty;
+    private string _bidStatusFilter = string.Empty;
+    private readonly PageState _paymentsPage = new();
+    private readonly PageState _bidsPage = new();
     private bool _showBidInspectorModal = false;
     private string _selectedListingId = string.Empty;
     private bool _isLoadingBids = false;
+    private string? _bidError;
     private List<BidItem> _inspectedBids = new();
+    private MarketplaceListing? _detailListing;
 
     private IEnumerable<TransactionLedger> FilteredTransactions =>
-        string.IsNullOrWhiteSpace(_searchFilter)
-            ? FirestoreService.Transactions
-            : FirestoreService.Transactions.Where(t =>
+        FirestoreService.Transactions
+            .Where(t => string.IsNullOrEmpty(_paymentFilter) || t.Status == _paymentFilter)
+            .Where(t => string.IsNullOrEmpty(_packageFilter) || t.PackageType == _packageFilter)
+            .Where(t => string.IsNullOrWhiteSpace(_searchFilter) ||
                 t.PayMongoIntentId.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                t.PaymentId.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
                 t.UserEmail.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
                 t.UserId.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                (FindUser(t.UserId)?.DisplayName ?? string.Empty).Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
                 t.ListingId.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
-                t.PackageType.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase));
+                (FindListing(t.ListingId)?.Title ?? string.Empty).Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                t.PackageType.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase) ||
+                t.Status.Contains(_searchFilter, StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<string> PackageOptions =>
+        FirestoreService.Transactions.Select(t => t.PackageType)
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Distinct().OrderBy(p => p);
+
+    private int CountByStatus(string status) => FirestoreService.Transactions.Count(t => t.Status == status);
+
+    private MarketplaceListing? FindListing(string listingId) =>
+        string.IsNullOrWhiteSpace(listingId)
+            ? null
+            : FirestoreService.AllListings.FirstOrDefault(l => l.Id == listingId);
+
+    private UserProfile? FindUser(string uid) =>
+        string.IsNullOrWhiteSpace(uid)
+            ? null
+            : FirestoreService.AllUsers.FirstOrDefault(u => string.Equals(u.Uid, uid, StringComparison.OrdinalIgnoreCase));
 
     protected override async Task OnInitializedAsync()
     {
@@ -377,8 +509,8 @@
         FirestoreService.OnMetricsUpdated += HandleRealtimeUpdate;
         FirestoreService.OnTransactionsUpdated += HandleRealtimeUpdate;
         FirestoreService.OnListingsUpdated += HandleRealtimeUpdate;
-        FirestoreService.OnVerificationsUpdated += HandleRealtimeUpdate;
-
+        FirestoreService.OnAllListingsUpdated += HandleRealtimeUpdate;
+        FirestoreService.OnAllUsersUpdated += HandleRealtimeUpdate;
         await FirestoreService.InitializeSubscriptionsAsync();
     }
 
@@ -389,11 +521,24 @@
 
     private async Task InspectBids(string listingId)
     {
+        // Prefer the full listing view (details + bid ladder) when the listing is in the live snapshot.
+        var listing = FirestoreService.AllListings.FirstOrDefault(l => l.Id == listingId);
+        if (listing != null)
+        {
+            _detailListing = listing;
+            return;
+        }
+
         _selectedListingId = listingId;
+        _bidStatusFilter = string.Empty;
+        _bidsPage.Reset();
         _showBidInspectorModal = true;
         _isLoadingBids = true;
+        _bidError = null;
 
-        _inspectedBids = await FirestoreService.GetListingBidsAsync(listingId);
+        var result = await FirestoreService.TryGetListingBidsAsync(listingId);
+        _inspectedBids = result.Bids;
+        _bidError = result.Success ? null : result.Error;
         _isLoadingBids = false;
     }
 
@@ -401,13 +546,8 @@
     {
         _showBidInspectorModal = false;
         _selectedListingId = string.Empty;
+        _bidError = null;
         _inspectedBids.Clear();
-    }
-
-    private void RefreshData()
-    {
-        ToastService.ShowInfo("Auditing latest PayMongo webhooks and Firestore metrics...", "Synchronizing");
-        StateHasChanged();
     }
 
     public void Dispose()
@@ -415,6 +555,7 @@
         FirestoreService.OnMetricsUpdated -= HandleRealtimeUpdate;
         FirestoreService.OnTransactionsUpdated -= HandleRealtimeUpdate;
         FirestoreService.OnListingsUpdated -= HandleRealtimeUpdate;
-        FirestoreService.OnVerificationsUpdated -= HandleRealtimeUpdate;
+        FirestoreService.OnAllListingsUpdated -= HandleRealtimeUpdate;
+        FirestoreService.OnAllUsersUpdated -= HandleRealtimeUpdate;
     }
 }
