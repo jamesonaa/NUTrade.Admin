@@ -93,9 +93,15 @@ window.NUTradeFirebase = (function () {
         const fields = {};
         Object.keys(obj).forEach(k => {
             const v = obj[k];
-            fields[k] = (v === null || v === undefined)
-                ? { nullValue: null }
-                : { stringValue: String(v) };
+            if (v === null || v === undefined) {
+                fields[k] = { nullValue: null };
+            } else if (v instanceof Date) {
+                // Dates go over REST as timestampValue so the document carries a
+                // real Firestore Timestamp, matching the SDK path above.
+                fields[k] = { timestampValue: v.toISOString() };
+            } else {
+                fields[k] = { stringValue: String(v) };
+            }
         });
         return fields;
     }
@@ -766,16 +772,21 @@ window.NUTradeFirebase = (function () {
         },
 
         // Second-factor codes live in the shared "(default)" database.
+        // Dates are written as Firestore Timestamps, never ISO strings - the app
+        // repo owns the rules on (default) and expects Timestamps throughout.
+        // getSecurityCodeHash normalises them back to ISO for the C# layer.
         saveSecurityCodeHash: async function (uid, codeHash, expiresAtIso) {
             if (!authInstance || !authInstance.currentUser) return false;
+
+            const expiresAtDate = new Date(expiresAtIso);
 
             if (dbInstance) {
                 try {
                     await dbInstance.collection("admin_security_codes").doc(uid).set({
                         uid: uid,
                         codeHash: codeHash,
-                        expiresAt: expiresAtIso,
-                        updatedAt: new Date().toISOString()
+                        expiresAt: window.firebase.firestore.Timestamp.fromDate(expiresAtDate),
+                        updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
                     });
                     return true;
                 } catch (err) {
@@ -783,11 +794,13 @@ window.NUTradeFirebase = (function () {
                 }
             }
             try {
+                // No serverTimestamp() over REST, so stamp the client clock as a
+                // real timestampValue (see toRestFields).
                 await webPanelRequest("PATCH", "admin_security_codes/" + uid, toRestFields({
                     uid: uid,
                     codeHash: codeHash,
-                    expiresAt: expiresAtIso,
-                    updatedAt: new Date().toISOString()
+                    expiresAt: expiresAtDate,
+                    updatedAt: new Date()
                 }));
                 return true;
             } catch (err) {
@@ -803,7 +816,9 @@ window.NUTradeFirebase = (function () {
                 try {
                     const snap = await dbInstance.collection("admin_security_codes").doc(uid).get();
                     if (snap.exists) {
-                        return snap.data();
+                        // expiresAt / updatedAt come back as Timestamps; the C#
+                        // side parses strings, so flatten them to ISO here.
+                        return sanitizeFirestoreData(snap.data());
                     }
                 } catch (err) {
                     console.warn("NUTrade: direct getSecurityCodeHash failed, trying REST fallback -", err.message || err);
